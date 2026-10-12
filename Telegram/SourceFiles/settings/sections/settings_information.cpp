@@ -78,6 +78,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 // AyuGram includes
 #include "ayu/ui/ayu_userpic.h"
 #include "ayu/utils/telegram_helpers.h"
+#include "ayu/features/account_groups/account_groups.h"
+#include "ayu/ui/account_groups/account_groups_ui.h"
 #include "styles/style_info.h"
 
 
@@ -255,15 +257,29 @@ public:
 	AccountsList(
 		not_null<Ui::VerticalLayout*> container,
 		not_null<Window::SessionController*> controller);
+	~AccountsList();
 
 	[[nodiscard]] rpl::producer<> closeRequests() const;
 	[[nodiscard]] Ui::RpWidget *addAccountButton() const;
 
 private:
+	using Accounts = std::vector<not_null<::Main::Account*>>;
+
 	void setup();
 
 	[[nodiscard]] not_null<Ui::SlideWrap<Ui::SettingsButton>*> setupAdd();
 	void rebuild();
+
+	// AyuGram: accounts are shown grouped by local categories.
+	void scheduleRebuild();
+	void addGroup(
+		not_null<Ui::VerticalLayout*> inner,
+		const AyuAccountGroups::Group &group,
+		const Accounts &accounts);
+	void fillAccounts(
+		not_null<Ui::VerticalLayout*> layout,
+		const Accounts &accounts);
+	void saveOrder();
 
 	const not_null<Window::SessionController*> _controller;
 	const not_null<Ui::VerticalLayout*> _outer;
@@ -275,12 +291,19 @@ private:
 		base::unique_qptr<Ui::SettingsButton>> _watched;
 
 	base::unique_qptr<Ui::PopupMenu> _contextMenu;
-	std::unique_ptr<Ui::VerticalLayoutReorder> _reorder;
+	std::vector<std::unique_ptr<Ui::VerticalLayoutReorder>> _reorders;
+	std::vector<not_null<Ui::VerticalLayout*>> _accountLayouts;
+	base::flat_set<not_null<::Main::Account*>> _locked;
 	int _reordering = 0;
+	bool _rebuildScheduled = false;
 
 	rpl::event_stream<> _closeRequests;
 
 	base::binary_guard _accountSwitchGuard;
+
+	// Holds all account buttons and category headers, rebuilt from scratch.
+	// The reorders above watch those buttons, so they must go first.
+	base::unique_qptr<Ui::VerticalLayout> _inner;
 
 };
 
@@ -876,13 +899,8 @@ void SetupAccountsWrap(
 	const auto session = &account->session();
 	const auto user = session->user();
 
-	auto text = rpl::single(
-		user->name()
-	) | rpl::then(session->changes().realtimeNameUpdates(
-		user
-	) | rpl::map([=] {
-		return user->name();
-	}));
+	// AyuGram: the custom account name, if set, instead of the real one.
+	auto text = AyuAccountGroups::DisplayNameValue(session);
 	auto result = object_ptr<Ui::SettingsButton>(
 		parent,
 		rpl::duplicate(text),
@@ -974,6 +992,8 @@ void SetupAccountsWrap(
 				Info::Profile::PhoneValue(session->user()));
 		}, &st::menuIconCopy);
 
+		AyuAccountGroups::FillAccountMenu(addAction, window->uiShow(), session);
+
 		if (!locked) {
 			if (!isActive) {
 				addAction(tr::lng_menu_activate(tr::now), [=] {
@@ -1020,6 +1040,12 @@ AccountsList::AccountsList(
 , _outer(container)
 , _outerIndex(container->count()) {
 	setup();
+}
+
+AccountsList::~AccountsList() {
+	// Stop watching the buttons before they are destroyed.
+	_reorders.clear();
+	_inner = nullptr;
 }
 
 rpl::producer<> AccountsList::closeRequests() const {
@@ -1069,6 +1095,13 @@ void AccountsList::setup() {
 			i->second = nullptr;
 		}
 		rebuild();
+	}, _outer->lifetime());
+
+	// Labels and categories change from menus of the list's own buttons,
+	// so the list is rebuilt later, when those menus are done.
+	AyuAccountGroups::Changes(
+	) | rpl::on_next([=] {
+		scheduleRebuild();
 	}, _outer->lifetime());
 }
 
@@ -1145,99 +1178,264 @@ not_null<Ui::SlideWrap<Ui::SettingsButton>*> AccountsList::setupAdd() {
 	return result;
 }
 
+void AccountsList::scheduleRebuild() {
+	if (_rebuildScheduled) {
+		return;
+	}
+	_rebuildScheduled = true;
+	Ui::PostponeCall(_outer, [=] {
+		if (_rebuildScheduled) {
+			rebuild();
+		}
+	});
+}
+
 void AccountsList::rebuild() {
+	_rebuildScheduled = false;
+
+	// The whole list is rebuilt from scratch, reorders go first.
+	_reorders.clear();
+	_accountLayouts.clear();
+	_locked.clear();
+	_reordering = 0;
+	for (auto &[account, button] : _watched) {
+		button = nullptr;
+	}
+	_inner = nullptr;
+
 	const auto inner = _outer->insert(
 		_outerIndex,
 		object_ptr<Ui::VerticalLayout>(_outer.get()));
+	_inner.reset(inner);
 
-	_reorder = std::make_unique<Ui::VerticalLayoutReorder>(inner);
-	_reorder->updates(
+	const auto premiumLimit = _controller->session().domain().maxAccounts();
+	const auto list = _controller->session().domain().orderedAccounts();
+	const auto count = int(list.size());
+
+	auto shown = Accounts();
+	if (count > 1) {
+		for (const auto &account : list) {
+			if (account->sessionExists() && _watched.contains(account)) {
+				shown.push_back(account);
+			}
+		}
+	}
+	for (auto i = premiumLimit; i < int(shown.size()); ++i) {
+		_locked.emplace(shown[i]);
+	}
+
+	// Accounts without a category go first, without any header,
+	// so with no categories the list looks exactly like before.
+	const auto groups = AyuAccountGroups::Groups();
+	auto byGroup = std::vector<Accounts>(groups.size() + 1);
+	for (const auto &account : shown) {
+		const auto id = AyuAccountGroups::GroupOf(
+			AyuAccountGroups::AccountKey(&account->session()));
+		const auto i = ranges::find(
+			groups,
+			id,
+			&AyuAccountGroups::Group::id);
+		const auto index = (i == end(groups))
+			? 0
+			: (int(i - begin(groups)) + 1);
+		byGroup[index].push_back(account);
+	}
+
+	fillAccounts(
+		inner->add(object_ptr<Ui::VerticalLayout>(inner)),
+		byGroup.front());
+	if (!shown.empty()) {
+		for (auto i = 0; i != int(groups.size()); ++i) {
+			addGroup(inner, groups[i], byGroup[i + 1]);
+		}
+	}
+	inner->resizeToWidth(_outer->width());
+
+	_addAccount->toggle(
+		(count < ::Main::Domain::kPremiumMaxAccounts),
+		anim::type::instant);
+}
+
+void AccountsList::addGroup(
+		not_null<Ui::VerticalLayout*> inner,
+		const AyuAccountGroups::Group &group,
+		const Accounts &accounts) {
+	const auto id = group.id;
+	const auto header = inner->add(
+		object_ptr<AyuAccountGroups::GroupHeader>(
+			inner,
+			st::mainMenuAddAccountButton,
+			group.name,
+			int(accounts.size()),
+			group.collapsed));
+	const auto wrap = inner->add(
+		object_ptr<Ui::SlideWrap<Ui::VerticalLayout>>(
+			inner,
+			object_ptr<Ui::VerticalLayout>(inner)));
+	wrap->toggle(!group.collapsed, anim::type::instant);
+	fillAccounts(wrap->entity(), accounts);
+
+	header->clicks(
+	) | rpl::on_next([=](Qt::MouseButton button) {
+		if (button != Qt::LeftButton) {
+			return;
+		}
+		const auto collapsed = !header->collapsed();
+		header->setCollapsed(collapsed);
+		wrap->toggle(!collapsed, anim::type::normal);
+		AyuAccountGroups::SetGroupCollapsed(id, collapsed);
+	}, header->lifetime());
+
+	const auto controller = _controller;
+	Ui::SetupButtonContextMenu(header, &st::popupMenuExpandedSeparator, [=](
+			not_null<Ui::PopupMenu*> menu) {
+		AyuAccountGroups::FillGroupMenu(
+			Ui::Menu::CreateAddActionCallback(menu),
+			controller->uiShow(),
+			id);
+	});
+
+	// Unread messages of the hidden accounts, while collapsed.
+	auto keys = base::flat_set<uint64>();
+	for (const auto &account : accounts) {
+		keys.emplace(AyuAccountGroups::AccountKey(&account->session()));
+	}
+	auto unread = rpl::combine(
+		header->collapsedValue(),
+		rpl::single(rpl::empty) | rpl::then(Core::App().unreadBadgeChanges())
+	) | rpl::map([=](bool collapsed, rpl::empty_value) {
+		auto result = Badge::UnreadBadge{ .muted = true };
+		if (!collapsed) {
+			return result;
+		}
+		const auto current = &controller->session();
+		for (const auto &[index, account] : Core::App().domain().accounts()) {
+			const auto session = account->maybeSession();
+			if (!session
+				|| session == current
+				|| !keys.contains(AyuAccountGroups::AccountKey(session))) {
+				continue;
+			}
+			result.count += session->data().unreadWithMentionsBadge();
+			if (!session->data().unreadWithMentionsBadgeMuted()) {
+				result.muted = false;
+			}
+		}
+		return result;
+	});
+	const auto badge = Badge::CreateUnread(header, std::move(unread));
+	const auto right = st::mainMenuAddAccountButton.padding.right();
+	rpl::combine(
+		header->sizeValue(),
+		badge->sizeValue(),
+		badge->shownValue()
+	) | rpl::on_next([=](QSize outer, QSize size, bool shown) {
+		badge->moveToRight(
+			right,
+			(outer.height() - size.height()) / 2,
+			outer.width());
+		header->setRightSkip(shown ? (size.width() + right) : 0);
+	}, badge->lifetime());
+}
+
+void AccountsList::fillAccounts(
+		not_null<Ui::VerticalLayout*> layout,
+		const Accounts &accounts) {
+	_accountLayouts.push_back(layout);
+
+	auto firstLocked = -1;
+	for (const auto &account : accounts) {
+		const auto i = _watched.find(account);
+		if (i == _watched.end()) {
+			continue;
+		}
+		const auto locked = _locked.contains(account);
+		if (locked && firstLocked < 0) {
+			firstLocked = layout->count();
+		}
+		auto callback = [=](Qt::KeyboardModifiers modifiers) {
+			if (_reordering) {
+				return;
+			}
+			if (account == &_controller->session().account()) {
+				_closeRequests.fire({});
+				return;
+			}
+			const auto newWindow = (modifiers & Qt::ControlModifier);
+			auto activate = [=, guard = _accountSwitchGuard.make_guard()]{
+				if (guard) {
+					for (const auto &reorder : _reorders) {
+						reorder->finishReordering();
+					}
+					if (newWindow) {
+						_closeRequests.fire({});
+						Core::App().ensureSeparateWindowFor(account);
+					}
+					Core::App().domain().maybeActivate(account);
+				}
+			};
+			if (const auto window = Core::App().separateWindowFor(
+					account)) {
+				_closeRequests.fire({});
+				window->activate();
+			} else {
+				base::call_delayed(
+					st::defaultRippleAnimation.hideDuration,
+					account,
+					std::move(activate));
+			}
+		};
+		i->second.reset(layout->add(MakeAccountButton(
+			layout,
+			_controller,
+			account,
+			std::move(callback),
+			locked)));
+	}
+
+	auto reorder = std::make_unique<Ui::VerticalLayoutReorder>(layout);
+	reorder->updates(
 	) | rpl::on_next([=](Ui::VerticalLayoutReorder::Single data) {
 		using State = Ui::VerticalLayoutReorder::State;
 		if (data.state == State::Started) {
 			++_reordering;
 		} else {
-			Ui::PostponeCall(inner, [=] {
+			Ui::PostponeCall(layout, [=] {
 				--_reordering;
 			});
 			if (data.state == State::Applied) {
-				std::vector<uint64> order;
-				order.reserve(inner->count());
-				for (auto i = 0; i < inner->count(); i++) {
-					for (const auto &[account, button] : _watched) {
-						if (button.get() == inner->widgetAt(i)) {
-							order.push_back(account->session().uniqueId());
-						}
-					}
-				}
-				Core::App().settings().setAccountsOrder(order);
-				Core::App().saveSettings();
+				saveOrder();
 			}
 		}
-	}, inner->lifetime());
+	}, layout->lifetime());
+	if (firstLocked >= 0) {
+		reorder->addPinnedInterval(
+			firstLocked,
+			layout->count() - firstLocked);
+	}
+	reorder->start();
+	_reorders.push_back(std::move(reorder));
+}
 
-	const auto premiumLimit = _controller->session().domain().maxAccounts();
-	const auto list = _controller->session().domain().orderedAccounts();
-	for (const auto &account : list) {
-		auto i = _watched.find(account);
-		Assert(i != _watched.end());
-
-		auto &button = i->second;
-		if (!account->sessionExists() || list.size() == 1) {
-			button = nullptr;
-		} else if (!button) {
-			const auto nextIsLocked = (inner->count() >= premiumLimit);
-			auto callback = [=](Qt::KeyboardModifiers modifiers) {
-				if (_reordering) {
-					return;
+void AccountsList::saveOrder() {
+	// The order shown, with categories, becomes the order of accounts.
+	auto order = std::vector<uint64>();
+	auto locked = std::vector<uint64>();
+	for (const auto &layout : _accountLayouts) {
+		for (auto i = 0; i < layout->count(); i++) {
+			const auto widget = layout->widgetAt(i);
+			for (const auto &[account, button] : _watched) {
+				if (button.get() == widget) {
+					(_locked.contains(account) ? locked : order).push_back(
+						account->session().uniqueId());
+					break;
 				}
-				if (account == &_controller->session().account()) {
-					_closeRequests.fire({});
-					return;
-				}
-				const auto newWindow = (modifiers & Qt::ControlModifier);
-				auto activate = [=, guard = _accountSwitchGuard.make_guard()]{
-					if (guard) {
-						_reorder->finishReordering();
-						if (newWindow) {
-							_closeRequests.fire({});
-							Core::App().ensureSeparateWindowFor(account);
-						}
-						Core::App().domain().maybeActivate(account);
-					}
-				};
-				if (const auto window = Core::App().separateWindowFor(
-						account)) {
-					_closeRequests.fire({});
-					window->activate();
-				} else {
-					base::call_delayed(
-						st::defaultRippleAnimation.hideDuration,
-						account,
-						std::move(activate));
-				}
-			};
-			button.reset(inner->add(MakeAccountButton(
-				inner,
-				_controller,
-				account,
-				std::move(callback),
-				nextIsLocked)));
+			}
 		}
 	}
-	inner->resizeToWidth(_outer->width());
-
-	const auto count = int(list.size());
-
-	_reorder->addPinnedInterval(
-		premiumLimit,
-		std::max(1, count - premiumLimit));
-
-	_addAccount->toggle(
-		(count < ::Main::Domain::kPremiumMaxAccounts),
-		anim::type::instant);
-
-	_reorder->start();
+	order.insert(end(order), begin(locked), end(locked));
+	Core::App().settings().setAccountsOrder(order);
+	Core::App().saveSettings();
 }
 
 void BuildInformationSection(SectionBuilder &builder) {

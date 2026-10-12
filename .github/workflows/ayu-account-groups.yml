@@ -1,0 +1,52 @@
+# Custom AyuGram build with local account names and categories.
+# Builds the Windows x64 executable and uploads it as an artifact.
+
+name: AyuGram with account groups.
+
+on:
+  push:
+    branches:
+      - account-groups
+  workflow_dispatch:
+
+concurrency:
+  group: ayu-account-groups
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  libraries-1:
+    uses: ./.github/workflows/ayu-account-groups-job.yml
+    with:
+      part: libraries-1
+
+  libraries-2:
+    needs: libraries-1
+    if: always() && needs.libraries-1.outputs.done != 'true'
+    uses: ./.github/workflows/ayu-account-groups-job.yml
+    with:
+      part: libraries-2
+
+  libraries-3:
+    needs: [libraries-1, libraries-2]
+    if: >-
+      always()
+      && needs.libraries-1.outputs.done != 'true'
+      && needs.libraries-2.outputs.done != 'true'
+    uses: ./.github/workflows/ayu-account-groups-job.yml
+    with:
+      part: libraries-3
+
+  build:
+    needs: [libraries-1, libraries-2, libraries-3]
+    if: >-
+      always()
+      && (needs.libraries-1.outputs.done == 'true'
+      || needs.libraries-2.outputs.done == 'true'
+      || needs.libraries-3.outputs.done == 'true')
+    uses: ./.github/workflows/ayu-account-groups-job.yml
+    with:
+      part: build
+      build: true

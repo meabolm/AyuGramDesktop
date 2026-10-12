@@ -57,6 +57,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 // AyuGram includes
 #include "ayu/ayu_settings.h"
 #include "ayu/utils/telegram_helpers.h"
+#include "ayu/features/account_groups/account_groups.h"
 
 
 namespace Window {
@@ -1274,10 +1275,15 @@ TextWithEntities Manager::addTargetAccountName(
 	if (!add) {
 		return title;
 	}
+	// AyuGram: the custom account name, if set.
+	const auto label = AyuAccountGroups::Label(
+		AyuAccountGroups::AccountKey(session));
 	return title.append(accountNameSeparator()).append(
-		(session->user()->username().isEmpty()
+		!label.isEmpty()
+			? label
+			: session->user()->username().isEmpty()
 			? session->user()->name()
-			: session->user()->username()));
+			: session->user()->username());
 }
 
 QString Manager::addTargetAccountName(

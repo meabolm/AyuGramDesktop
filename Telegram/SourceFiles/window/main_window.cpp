@@ -62,6 +62,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 // AyuGram includes
 #include "ayu/ui/ayu_logo.h"
+#include "ayu/features/account_groups/account_groups.h"
 
 
 namespace Window {
@@ -429,6 +430,12 @@ MainWindow::MainWindow(not_null<Controller*> controller)
 		updateTitle();
 		unreadCounterChangedHook();
 		Core::App().tray().updateIconCounters();
+	}, lifetime());
+
+	// AyuGram: custom account names are shown in the title.
+	AyuAccountGroups::Changes(
+	) | rpl::on_next([=] {
+		updateTitle();
 	}, lifetime());
 
 	Core::App().settings().workModeChanges(
@@ -907,7 +914,7 @@ void MainWindow::updateTitle() {
 	const auto user = (session
 		&& !settings.hideAccountName
 		&& Core::App().domain().accountsAuthedCount() > 1)
-		? st::wrap_rtl(session->authedName())
+		? st::wrap_rtl(AyuAccountGroups::DisplayName(&session->session()))
 		: QString();
 	const auto separateSharedMediaTitle = session
 		? TitleFromSeparateSharedMedia(settings, session->windowId())

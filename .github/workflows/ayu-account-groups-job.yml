@@ -1,0 +1,229 @@
+# One Windows job of the "account groups" custom build.
+#
+# Libraries take many hours on a free runner, longer than one job may run.
+# So the libraries step stops itself in time, everything built so far is
+# cached, and the next job continues from that cache. The final job builds
+# AyuGram itself from the finished libraries.
+
+name: Account groups Windows job.
+
+on:
+  workflow_call:
+    inputs:
+      part:
+        type: string
+        required: true
+      build:
+        type: boolean
+        default: false
+    outputs:
+      done:
+        description: All libraries are built.
+        value: ${{ jobs.windows.outputs.done }}
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows x64 (${{ inputs.part }})
+    runs-on: windows-latest
+    timeout-minutes: 355
+
+    outputs:
+      done: ${{ steps.libraries.outcome == 'success' }}
+
+    env:
+      PREPARE_PATH: "Telegram/build/prepare/prepare.py"
+
+    defaults:
+      run:
+        shell: cmd
+
+    steps:
+      - name: Prepare directories.
+        run: |
+          mkdir %userprofile%\TBuild\Libraries
+          mklink /d %GITHUB_WORKSPACE%\TBuild %userprofile%\TBuild
+          echo TBUILD=%GITHUB_WORKSPACE%\TBuild>>%GITHUB_ENV%
+          echo LibrariesPath=%GITHUB_WORKSPACE%\TBuild\Libraries\win64>>%GITHUB_ENV%
+
+      - name: Get repository name.
+        shell: bash
+        run: echo "REPO_NAME=${GITHUB_REPOSITORY##*/}" >> $GITHUB_ENV
+
+      - name: Clone.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: ${{ env.TBUILD }}\${{ env.REPO_NAME }}
+
+      - name: Submodules.
+        shell: bash
+        run: |
+          cd $TBUILD/$REPO_NAME
+          git submodule update --init --depth=1
+
+      - name: First set up.
+        shell: bash
+        run: |
+          DOCPATH=$TBUILD/$REPO_NAME/docs/building-win.md
+          SDK="$(grep "SDK version" $DOCPATH | sed -r 's/.*\*\*(.*)\*\* SDK version.*/\1/')"
+          echo "SDK=$SDK" >> $GITHUB_ENV
+
+          sed -i '/CMAKE_${lang}_FLAGS_DEBUG_INIT/s/${_Zi}//' "$PROGRAMFILES"/CMake/share/cmake*/Modules/Platform/Windows-MSVC.cmake
+
+          echo "$(sha256sum $TBUILD/$REPO_NAME/$PREPARE_PATH | awk '{ print $1 }')" >> CACHE_KEY.txt
+          echo "$SDK" >> CACHE_KEY.txt
+          echo "CACHE_KEY=$(sha256sum CACHE_KEY.txt | awk '{ print $1 }')" >> $GITHUB_ENV
+
+          git config --global user.email "you@example.com"
+          git config --global user.name "Sample"
+
+      # breakpad's dump_syms needs ATL for the selected 14.44 toolset.
+      - name: Visual Studio ATL component.
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $installer = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer'
+          $vswhere = Join-Path $installer 'vswhere.exe'
+          $setup = Join-Path $installer 'setup.exe'
+          $path = @(& $vswhere -latest -products '*' -property installationPath)[0]
+          $version = @(& $vswhere -latest -products '*' -property installationVersion)[0]
+          $toolset = Get-ChildItem (Join-Path $path 'VC\Tools\MSVC') -Directory `
+            | Where-Object { $_.Name -like '14.44.*' } `
+            | Sort-Object Name -Descending `
+            | Select-Object -First 1
+          if ($toolset -and (Test-Path (Join-Path $toolset.FullName 'atlmfc\include\atlbase.h'))) {
+            Write-Host "ATL is already installed for $($toolset.Name)."
+            exit 0
+          }
+          $component = if ($version -like '17.*') {
+            'Microsoft.VisualStudio.Component.VC.ATL'
+          } else {
+            'Microsoft.VisualStudio.Component.VC.14.44.17.14.ATL'
+          }
+          Write-Host "Installing $component into $path ($version)."
+          $process = Start-Process -FilePath $setup -Wait -PassThru -ArgumentList @(
+            'modify',
+            '--installPath', "`"$path`"",
+            '--add', $component,
+            '--quiet', '--norestart', '--nocache'
+          )
+          Write-Host "Visual Studio Installer exited with $($process.ExitCode)."
+
+      - uses: Eden-CI/msvc-dev-cmd@1bd71f95d6f3d1b2b3395b335cc63bcdc90cf223
+        name: Native Tools Command Prompt.
+        with:
+          arch: x64
+          sdk: ${{ env.SDK }}
+          toolset: '14.44'
+
+      - name: NuGet sources.
+        run: |
+          nuget sources Disable -Name "Microsoft Visual Studio Offline Packages"
+          nuget sources Add -Source https://api.nuget.org/v3/index.json & exit 0
+
+      - name: ThirdParty cache.
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ env.TBUILD }}\ThirdParty
+          key: ${{ runner.os }}-ag-third-party-${{ env.CACHE_KEY }}-none
+          restore-keys: ${{ runner.os }}-ag-third-party-${{ env.CACHE_KEY }}-
+
+      - name: Libraries cache.
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ${{ env.LibrariesPath }}\*
+            !${{ env.LibrariesPath }}\cache_keys
+            !${{ env.LibrariesPath }}\[qQ]t[_-]*
+            ${{ env.LibrariesPath }}\cache_keys\*
+            !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
+          key: ${{ runner.os }}-ag-libs-${{ env.CACHE_KEY }}-none
+          restore-keys: ${{ runner.os }}-ag-libs-${{ env.CACHE_KEY }}-
+
+      - name: Qt cache.
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ${{ env.LibrariesPath }}\[qQ]t[_-]*
+            ${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
+          key: ${{ runner.os }}-ag-qt-${{ env.CACHE_KEY }}-none
+          restore-keys: ${{ runner.os }}-ag-qt-${{ env.CACHE_KEY }}-
+
+      - name: Libraries.
+        id: libraries
+        continue-on-error: ${{ !inputs.build }}
+        timeout-minutes: 290
+        run: |
+          %TBUILD%\%REPO_NAME%\Telegram\build\prepare\win.bat silent
+
+      - name: Free up some disk space.
+        if: always()
+        shell: bash
+        run: find $LibrariesPath '(' '(' ! '(' -name '*.lib' -o -name '*.a' -o -name '*.exe' -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' -o -name '*.cmake' -o -name '*.pc' -o -path '*/include/*' -o -path '*/objects-*' -o -path '*/cache_keys/*' -o -path '*/patches/*' -o -path '*/nv-codec-headers/*' ')' -type f ')' -o -empty ')' -delete
+
+      - name: Save ThirdParty cache.
+        if: always() && !inputs.build
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ env.TBUILD }}\ThirdParty
+          key: ${{ runner.os }}-ag-third-party-${{ env.CACHE_KEY }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.part }}
+
+      - name: Save Libraries cache.
+        if: always() && !inputs.build
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ${{ env.LibrariesPath }}\*
+            !${{ env.LibrariesPath }}\cache_keys
+            !${{ env.LibrariesPath }}\[qQ]t[_-]*
+            ${{ env.LibrariesPath }}\cache_keys\*
+            !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
+          key: ${{ runner.os }}-ag-libs-${{ env.CACHE_KEY }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.part }}
+
+      - name: Save Qt cache.
+        if: always() && !inputs.build
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ${{ env.LibrariesPath }}\[qQ]t[_-]*
+            ${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
+          key: ${{ runner.os }}-ag-qt-${{ env.CACHE_KEY }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.part }}
+
+      # Same API credentials as the official AyuGram build, so the existing
+      # sessions keep working exactly as they are. No auto-update, so the
+      # official updater never replaces this build.
+      - name: AyuGram build.
+        if: inputs.build
+        run: |
+          cd %TBUILD%\%REPO_NAME%\Telegram
+
+          call configure.bat ^
+          x64 ^
+          -D TDESKTOP_API_ID=2040 ^
+          -D TDESKTOP_API_HASH=b18441a1ff607e10a989891a5462e627 ^
+          -D CMAKE_CONFIGURATION_TYPES=Release ^
+          -D DESKTOP_APP_DISABLE_AUTOUPDATE=ON ^
+          -D DESKTOP_APP_DISABLE_CRASH_REPORTS=OFF
+          if errorlevel 1 exit /b 1
+
+          cmake --build ..\out --config Release --parallel --target Telegram
+
+      - name: Collect the result.
+        if: inputs.build
+        shell: bash
+        run: |
+          OUT="$TBUILD/$REPO_NAME/out/Release"
+          ls -la "$OUT"
+          mkdir -p artifact
+          cp "$OUT"/*.exe artifact/
+          ls -la artifact
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        name: Upload the result.
+        if: inputs.build
+        with:
+          name: AyuGram-account-groups
+          path: artifact\
+          retention-days: 30
