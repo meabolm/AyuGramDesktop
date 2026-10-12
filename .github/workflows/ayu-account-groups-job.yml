@@ -66,6 +66,19 @@ jobs:
       - name: First set up.
         shell: bash
         run: |
+          # breakpad's dump_syms tool needs ATL for the 14.44 toolset, which
+          # the runner lacks, and it's only used to upload crash symbols.
+          python - "$TBUILD/$REPO_NAME/$PREPARE_PATH" <<'PY'
+          import sys
+          path = sys.argv[1]
+          with open(path, encoding='utf-8') as f:
+              lines = f.readlines()
+          kept = [line for line in lines if 'dump_syms' not in line]
+          print('Removed', len(lines) - len(kept), 'dump_syms lines.')
+          with open(path, 'w', encoding='utf-8', newline='') as f:
+              f.writelines(kept)
+          PY
+
           DOCPATH=$TBUILD/$REPO_NAME/docs/building-win.md
           SDK="$(grep "SDK version" $DOCPATH | sed -r 's/.*\*\*(.*)\*\* SDK version.*/\1/')"
           echo "SDK=$SDK" >> $GITHUB_ENV
@@ -78,38 +91,6 @@ jobs:
 
           git config --global user.email "you@example.com"
           git config --global user.name "Sample"
-
-      # breakpad's dump_syms needs ATL for the selected 14.44 toolset.
-      - name: Visual Studio ATL component.
-        shell: pwsh
-        continue-on-error: true
-        run: |
-          $installer = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer'
-          $vswhere = Join-Path $installer 'vswhere.exe'
-          $setup = Join-Path $installer 'setup.exe'
-          $path = @(& $vswhere -latest -products '*' -property installationPath)[0]
-          $version = @(& $vswhere -latest -products '*' -property installationVersion)[0]
-          $toolset = Get-ChildItem (Join-Path $path 'VC\Tools\MSVC') -Directory `
-            | Where-Object { $_.Name -like '14.44.*' } `
-            | Sort-Object Name -Descending `
-            | Select-Object -First 1
-          if ($toolset -and (Test-Path (Join-Path $toolset.FullName 'atlmfc\include\atlbase.h'))) {
-            Write-Host "ATL is already installed for $($toolset.Name)."
-            exit 0
-          }
-          $component = if ($version -like '17.*') {
-            'Microsoft.VisualStudio.Component.VC.ATL'
-          } else {
-            'Microsoft.VisualStudio.Component.VC.14.44.17.14.ATL'
-          }
-          Write-Host "Installing $component into $path ($version)."
-          $process = Start-Process -FilePath $setup -Wait -PassThru -ArgumentList @(
-            'modify',
-            '--installPath', "`"$path`"",
-            '--add', $component,
-            '--quiet', '--norestart', '--nocache'
-          )
-          Write-Host "Visual Studio Installer exited with $($process.ExitCode)."
 
       - uses: Eden-CI/msvc-dev-cmd@1bd71f95d6f3d1b2b3395b335cc63bcdc90cf223
         name: Native Tools Command Prompt.
