@@ -175,9 +175,24 @@ jobs:
       # Same API credentials as the official AyuGram build, so the existing
       # sessions keep working exactly as they are. No auto-update, so the
       # official updater never replaces this build.
+      # The compiler ran out of memory (C1060) with the small default
+      # pagefile, so give it a big one on the roomy D: drive.
+      - name: Bigger pagefile.
+        if: inputs.build
+        uses: al-cheb/configure-pagefile-action@9b6da52fb72a3c6147c1aad2df22d8d905681adc # v1.5
+        with:
+          minimum-size: 16GB
+          maximum-size: 40GB
+          disk-root: "D:"
+
       - name: AyuGram configure.
         if: inputs.build
         run: |
+          mkdir D:\tmp
+          echo TEMP=D:\tmp>>%GITHUB_ENV%
+          echo TMP=D:\tmp>>%GITHUB_ENV%
+          rem At most 3 compiler processes at once, to fit in memory.
+          echo _CL_=/MP3>>%GITHUB_ENV%
           powershell -Command "Get-PSDrive C,D | ForEach-Object { Write-Host ('::notice::Before build, drive ' + $_.Name + ' free ' + [math]::Round($_.Free/1GB,1) + ' GB') }"
           rem The C: drive is nearly full on this runner, D: has plenty.
           mkdir %GITHUB_WORKSPACE%\ayu-out
