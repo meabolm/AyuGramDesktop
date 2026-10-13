@@ -179,6 +179,10 @@ jobs:
         if: inputs.build
         run: |
           powershell -Command "Get-PSDrive C,D | ForEach-Object { Write-Host ('::notice::Before build, drive ' + $_.Name + ' free ' + [math]::Round($_.Free/1GB,1) + ' GB') }"
+          rem The C: drive is nearly full on this runner, D: has plenty.
+          mkdir %GITHUB_WORKSPACE%\ayu-out
+          mklink /J %TBUILD%\%REPO_NAME%\out %GITHUB_WORKSPACE%\ayu-out
+          if errorlevel 1 exit /b 1
           cd %TBUILD%\%REPO_NAME%\Telegram
 
           call configure.bat ^
@@ -197,7 +201,8 @@ jobs:
         run: |
           cd "$TBUILD/$REPO_NAME/out"
           set +e
-          cmake --build . --config Release --parallel --target Telegram 2>&1 | tee build.log
+          # One project at a time (each still compiles on all cores), to fit in RAM.
+          cmake --build . --config Release --target Telegram 2>&1 | tee build.log
           status=${PIPESTATUS[0]}
           set -e
           powershell -Command "Get-PSDrive C,D | ForEach-Object { Write-Host ('::notice::After build, drive ' + \$_.Name + ' free ' + [math]::Round(\$_.Free/1GB,1) + ' GB') }"
