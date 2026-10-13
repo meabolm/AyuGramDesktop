@@ -192,7 +192,7 @@ jobs:
           echo TEMP=D:\tmp>>%GITHUB_ENV%
           echo TMP=D:\tmp>>%GITHUB_ENV%
           rem At most 3 compiler processes at once, to fit in memory.
-          echo _CL_=/MP3>>%GITHUB_ENV%
+          echo _CL_=-MP3>>%GITHUB_ENV%
           powershell -Command "Get-PSDrive C,D | ForEach-Object { Write-Host ('::notice::Before build, drive ' + $_.Name + ' free ' + [math]::Round($_.Free/1GB,1) + ' GB') }"
           rem The C: drive is nearly full on this runner, D: has plenty.
           mkdir %GITHUB_WORKSPACE%\ayu-out
