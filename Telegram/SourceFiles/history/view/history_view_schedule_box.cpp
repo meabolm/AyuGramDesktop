@@ -356,33 +356,11 @@ void ScheduleBox(
 	});
 
 	if (repeat) {
-		const auto boxShow = box->uiShow();
-		const auto showPremiumPromo = [=] {
-			if (session->premium()) {
-				return false;
-			}
-			Settings::ShowPremiumPromoToast(
-				Main::MakeSessionShow(boxShow, session),
-				ChatHelpers::ResolveWindowDefault(),
-				tr::lng_schedule_repeat_promo(
-					tr::now,
-					lt_link,
-					tr::link(
-						tr::bold(
-							tr::lng_schedule_repeat_promo_link(tr::now))),
-					tr::rich),
-				u"schedule_repeat"_q);
-			return true;
-		};
-		auto locked = Data::AmPremiumValue(
-			session
-		) | rpl::map([=](bool premium) {
-			return !premium;
-		});
+		// AyuGram: repeating messages work without Premium too, they are
+		// scheduled ahead by AyuRepeat (see ApiWrap::sendMessage).
 		const auto row = box->addRow(Ui::ChooseRepeatPeriod(box, {
-			.value = session->premium() ? *repeat : TimeId(),
-			.locked = std::move(locked),
-			.filter = showPremiumPromo,
+			.value = *repeat,
+			.locked = false,
 			.changed = [=](TimeId value) { *repeat = value; },
 			.test = session->isTestMode(),
 		}), st::scheduleRepeatMargin, style::al_top);

@@ -1,0 +1,46 @@
+/*
+ * This is the source code of AyuGram for Desktop.
+ *
+ * We do not and cannot prevent the use of our code,
+ * but be respectful and credit the original author.
+ *
+ * Copyright @Radolyn, 2026
+ */
+
+using "ui/basic.style";
+using "ui/colors.palette";
+using "ui/widgets/widgets.style";
+using "ui/layers/layers.style";
+using "settings/settings.style";
+using "chat_helpers/chat_helpers.style";
+
+ayuAiAskButton: IconButton(historyAttach) {
+	icon: icon {
+		{ "chat/ai_letters-20x20", historyComposeIconFg },
+		{ "chat/ai_star1-20x20", historyComposeIconFg },
+		{ "chat/ai_star2-20x20", historyComposeIconFg }
+	};
+	iconOver: icon {
+		{ "chat/ai_letters-20x20", historyComposeIconFgOver },
+		{ "chat/ai_star1-20x20", historyComposeIconFgOver },
+		{ "chat/ai_star2-20x20", historyComposeIconFgOver }
+	};
+}
+
+ayuToolsRow: SettingsButton(settingsButtonNoIcon) {
+	padding: margins(22px, 8px, 22px, 7px);
+}
+ayuToolsAnswer: FlatLabel(boxLabel) {
+	minWidth: 300px;
+}
+ayuToolsHint: FlatLabel(boxLabel) {
+	minWidth: 300px;
+	textFg: windowSubTextFg;
+}
+ayuToolsField: InputField(defaultInputField) {
+	heightMax: 160px;
+}
+ayuToolsBigField: InputField(defaultInputField) {
+	heightMax: 260px;
+}
+ayuToolsSkip: 8px;

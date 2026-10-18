@@ -143,6 +143,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ayu/utils/telegram_helpers.h"
 #include "styles/style_ayu_icons.h"
 #include "ayu/ui/context_menu/context_menu.h"
+#include "ayu/ui/ayu_tools/ayu_tools_boxes.h"
 #include "ayu/features/forward/ayu_forward.h"
 
 
@@ -1930,6 +1931,7 @@ void Filler::fillContextMenuActions() {
 void Filler::fillHistoryActions() {
 	addToggleMuteSubmenu(true);
 	AyuUi::AddAyuGramActions(_peer, _thread, _controller, _addAction);
+	AyuToolsUi::AddChatToolsMenu(_peer, _thread, _controller, _addAction);
 	addCreateTopic();
 	addInfo();
 	AyuUi::AddJumpToBeginningAction(_peer, _thread, _controller, _addAction);
@@ -1987,6 +1989,7 @@ void Filler::fillProfileActions() {
 
 void Filler::fillRepliesActions() {
 	AyuUi::AddAyuGramActions(_peer, _thread, _controller, _addAction);
+	AyuToolsUi::AddChatToolsMenu(_peer, _thread, _controller, _addAction);
 	if (_topic) {
 		addInfo();
 		AyuUi::AddJumpToBeginningAction(_peer, _thread, _controller, _addAction);

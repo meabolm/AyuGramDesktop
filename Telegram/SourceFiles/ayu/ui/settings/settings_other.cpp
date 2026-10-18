@@ -8,6 +8,8 @@
 
 #include "lang_auto.h"
 #include "ayu/ayu_settings.h"
+#include "ayu/features/account_groups/account_groups.h"
+#include "ayu/ui/ayu_tools/ayu_tools_boxes.h"
 #include "ayu/ui/boxes/donate_qr_box.h"
 #include "ayu/ui/settings/ayu_builder.h"
 #include "ayu/ui/settings/settings_ayu_utils.h"
@@ -197,6 +199,30 @@ void BuildOtherThings(SectionBuilder &builder) {
 	const auto controller = builder.controller();
 
 	builder.addSkip();
+	builder.addButton({
+		.id = u"ayu/aiServices"_q,
+		.title = rpl::single(AyuAccountGroups::Tr("AI services", "سرویس‌های هوش مصنوعی")),
+		.icon = { &st::menuIconBot },
+		.onClick = [=] {
+			AyuToolsUi::ShowAiProviders(controller->uiShow());
+		},
+	});
+	builder.addButton({
+		.id = u"ayu/aiTasks"_q,
+		.title = rpl::single(AyuAccountGroups::Tr("AI tasks", "وظیفه‌های هوش مصنوعی")),
+		.icon = { &st::menuIconSchedule },
+		.onClick = [=] {
+			AyuToolsUi::ShowAllAiTasks(controller);
+		},
+	});
+	builder.addButton({
+		.id = u"ayu/repeatingMessages"_q,
+		.title = rpl::single(AyuAccountGroups::Tr("Repeating messages", "پیام‌های تکراری")),
+		.icon = { &st::menuIconRestore },
+		.onClick = [=] {
+			AyuToolsUi::ShowRepeatingMessages(controller);
+		},
+	});
 	builder.addButton({
 		.id = u"ayu/registerUrlScheme"_q,
 		.title = tr::ayu_RegisterURLScheme(),

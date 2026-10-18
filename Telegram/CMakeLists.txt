@@ -181,6 +181,8 @@ set(ayugram_files
         ayu/ui/message_history/history_section.h
         ayu/ui/account_groups/account_groups_ui.cpp
         ayu/ui/account_groups/account_groups_ui.h
+        ayu/ui/ayu_tools/ayu_tools_boxes.cpp
+        ayu/ui/ayu_tools/ayu_tools_boxes.h
         ayu/ui/boxes/edit_mark_box.cpp
         ayu/ui/boxes/edit_mark_box.h
         ayu/ui/boxes/font_selector.cpp
@@ -223,6 +225,16 @@ set(ayugram_files
         ayu/features/streamer_mode/streamer_mode.h
         ayu/features/account_groups/account_groups.cpp
         ayu/features/account_groups/account_groups.h
+        ayu/features/ai/ai_core.cpp
+        ayu/features/ai/ai_core.h
+        ayu/features/ayu_tools/ayu_tools.cpp
+        ayu/features/ayu_tools/ayu_tools.h
+        ayu/features/ayu_tools/history_loader.cpp
+        ayu/features/ayu_tools/history_loader.h
+        ayu/features/chat_stats/chat_stats.cpp
+        ayu/features/chat_stats/chat_stats.h
+        ayu/features/repeat_schedule/repeat_schedule.cpp
+        ayu/features/repeat_schedule/repeat_schedule.h
         ayu/features/message_shot/message_shot.cpp
         ayu/features/message_shot/message_shot.h
         ayu/features/message_shot/message_shot_theme_state.cpp

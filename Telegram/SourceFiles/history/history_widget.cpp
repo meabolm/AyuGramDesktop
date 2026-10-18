@@ -219,6 +219,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 // AyuGram includes
 #include "ayu/ayu_settings.h"
+#include "ayu/ui/ayu_tools/ayu_tools_boxes.h"
+#include "styles/style_ayu_tools.h"
 #include "ayu/features/filters/filters_cache_controller.h"
 #include "ayu/utils/telegram_helpers.h"
 #include "ayu/features/message_shot/message_shot.h"
@@ -548,6 +550,33 @@ HistoryWidget::HistoryWidget(
 	}, lifetime());
 
 	initTabbedSelector();
+
+	// AyuGram: "Ask AI" button next to the send button.
+	_ayuAiAsk.create(this, st::ayuAiAskButton);
+	_ayuAiAsk->setAccessibleName(u"AI"_q);
+	_ayuAiAsk->setClickedCallback([=] {
+		if (!_peer) {
+			return;
+		}
+		const auto field = _field.data();
+		AyuToolsUi::ShowAiAsk(
+			this->controller(),
+			_peer,
+			_replyTo.messageId,
+			_field->getTextWithTags().text,
+			crl::guard(this, [=](QString text) {
+				field->setTextWithTags({ text });
+				field->setFocus();
+			}));
+	});
+	_attachToggle->shownValue(
+	) | rpl::on_next([=](bool shown) {
+		if (_ayuAiAsk->isHidden() == shown) {
+			_ayuAiAsk->setVisible(shown);
+			updateFieldSize();
+			moveFieldControls();
+		}
+	}, _ayuAiAsk->lifetime());
 
 	_attachToggle->setClickedCallback([=] {
 		const auto toggle = _attachBotsMenu && _attachBotsMenu->isHidden();
@@ -7654,6 +7683,10 @@ void HistoryWidget::moveFieldControls() {
 		_scheduled->moveToRight(right, buttonsBottom);
 		right += _scheduled->width();
 	}
+	if (_ayuAiAsk && !_ayuAiAsk->isHidden()) {
+		_ayuAiAsk->moveToRight(right, buttonsBottom);
+		right += _ayuAiAsk->width();
+	}
 	if (_ttlInfo) {
 		_ttlInfo->move(width() - right - _ttlInfo->width(), buttonsBottom);
 	}
@@ -7725,6 +7758,9 @@ void HistoryWidget::updateFieldSize() {
 	}
 	if (_scheduled && !_scheduled->isHidden()) {
 		fieldWidth -= _scheduled->width();
+	}
+	if (_ayuAiAsk && !_ayuAiAsk->isHidden()) {
+		fieldWidth -= _ayuAiAsk->width();
 	}
 	if (_ttlInfo && _ttlInfo->isVisible() && settings.showAutoDeleteButtonInMessageField()) {
 		fieldWidth -= _ttlInfo->width();
