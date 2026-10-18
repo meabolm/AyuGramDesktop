@@ -227,6 +227,8 @@ set(ayugram_files
         ayu/features/account_groups/account_groups.h
         ayu/features/ai/ai_core.cpp
         ayu/features/ai/ai_core.h
+        ayu/features/ai/ai_multi_reply.cpp
+        ayu/features/ai/ai_multi_reply.h
         ayu/features/ayu_tools/ayu_tools.cpp
         ayu/features/ayu_tools/ayu_tools.h
         ayu/features/ayu_tools/history_loader.cpp

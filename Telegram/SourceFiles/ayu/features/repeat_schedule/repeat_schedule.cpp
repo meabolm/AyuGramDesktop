@@ -6,6 +6,8 @@
 // Copyright @Radolyn, 2026
 #include "ayu/features/repeat_schedule/repeat_schedule.h"
 
+#include "ayu/features/account_groups/account_groups.h"
+
 #include "apiwrap.h"
 #include "ayu/features/ayu_tools/ayu_tools.h"
 #include "ayu/features/ayu_tools/history_loader.h"
@@ -63,6 +65,7 @@ void Save() {
 		object.insert(u"period"_q, job.period);
 		object.insert(u"first"_q, job.first);
 		object.insert(u"created"_q, job.created);
+		object.insert(u"planned"_q, job.planned);
 		object.insert(u"silent"_q, job.silent);
 		list.append(object);
 	}
@@ -94,6 +97,7 @@ State &Loaded() {
 			.period = TimeId(object.value(u"period"_q).toInt()),
 			.first = TimeId(object.value(u"first"_q).toInt()),
 			.created = TimeId(object.value(u"created"_q).toInt()),
+			.planned = TimeId(object.value(u"planned"_q).toInt()),
 			.silent = object.value(u"silent"_q).toBool(),
 		};
 		if (job.id && job.account && job.peer && job.period > 0) {
@@ -183,7 +187,10 @@ void TopUpJob(not_null<Main::Session*> session, const Job &job) {
 				last = std::max(last, message.date);
 			}
 		}
-		if (!copies && (now - job.created) > kDeletedAfter) {
+		const auto deleted = job.planned
+			? (job.planned > now + 60)
+			: ((now - job.created) > kDeletedAfter);
+		if (!copies && deleted) {
 			// All the scheduled copies were deleted: the user stopped it.
 			release();
 			Remove(jobId);
@@ -200,6 +207,10 @@ void TopUpJob(not_null<Main::Session*> session, const Job &job) {
 		while (int(dates.size()) < capacity && next <= now + kMaxAhead) {
 			dates.push_back(next);
 			next += job.period;
+		}
+		if (!dates.empty()) {
+			i->planned = dates.back();
+			Save();
 		}
 		SendCopies(session, job, std::move(dates), release);
 	}, [=](const QString &error) {
@@ -235,7 +246,8 @@ bool Intercept(
 	auto &options = message.action.options;
 	if (!options.scheduled
 		|| options.scheduleRepeatPeriod <= 0
-		|| session->user()->isPremium()
+		|| (session->user()->isPremium()
+			&& options.scheduleRepeatPeriod >= 24 * 60 * 60)
 		|| message.textWithTags.text.trimmed().isEmpty()) {
 		return false;
 	}
@@ -325,10 +337,12 @@ void TopUp(not_null<Main::Session*> session) {
 
 QString PeriodText(TimeId period) {
 	const auto day = TimeId(24 * 60 * 60);
-	if (period <= 60) {
-		return u"Every minute"_q;
-	} else if (period <= 300) {
-		return u"Every 5 minutes"_q;
+	if (period < 60 * 60) {
+		return AyuAccountGroups::Tr("Every %1 min", "هر %1 دقیقه")
+			.arg(std::max(period / 60, 1));
+	} else if (period < day) {
+		return AyuAccountGroups::Tr("Every %1 h", "هر %1 ساعت")
+			.arg(period / 3600);
 	} else if (period <= day) {
 		return tr::lng_schedule_repeat_daily(tr::now);
 	} else if (period <= 7 * day) {

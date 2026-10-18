@@ -12,6 +12,10 @@ namespace Ui {
 class Show;
 } // namespace Ui
 
+namespace Ui {
+class PopupMenu;
+} // namespace Ui
+
 namespace Data {
 class Thread;
 } // namespace Data
@@ -44,6 +48,17 @@ void ShowAiAsk(
 void ShowChatStats(
 	not_null<Window::SessionController*> controller,
 	not_null<PeerData*> peer);
+
+// Replies to one message from several of my accounts.
+void ShowMultiReply(
+	not_null<Window::SessionController*> controller,
+	QString link = QString());
+
+// Items for the context menu of a message.
+void AddMessageToolsActions(
+	not_null<Ui::PopupMenu*> menu,
+	HistoryItem *item,
+	not_null<Window::SessionController*> controller);
 
 // "My tools" submenu of the chat menu.
 void AddChatToolsMenu(

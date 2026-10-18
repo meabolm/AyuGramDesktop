@@ -30,6 +30,7 @@ struct Job {
 	TimeId period = 0;
 	TimeId first = 0;
 	TimeId created = 0;
+	TimeId planned = 0; // The date of the last scheduled copy.
 	bool silent = false;
 };
 

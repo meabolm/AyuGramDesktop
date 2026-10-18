@@ -340,6 +340,20 @@ object_ptr<Ui::RpWidget> ChooseRepeatPeriod(
 		map.insert(begin(map) + 1, Entry{ 300, u"Every 5 minutes"_q });
 		map.insert(begin(map) + 1, Entry{ 60, u"Every minute"_q });
 	}
+	// AyuGram: short periods, kept by scheduling copies in advance.
+	for (const auto minutes : { 5, 10, 15, 30 }) {
+		if (!args.test || minutes != 5) {
+			map.push_back({
+				minutes * 60,
+				tr::lng_minutes(tr::now, lt_count, minutes) });
+		}
+	}
+	for (const auto hours : { 1, 2, 3, 4, 6, 8, 12 }) {
+		map.push_back({
+			hours * 60 * 60,
+			tr::lng_hours(tr::now, lt_count, hours) });
+	}
+	ranges::sort(map, ranges::less(), &Entry::value);
 
 	const auto button = Ui::CreateChild<RepeatButton>(raw);
 	rpl::combine(
