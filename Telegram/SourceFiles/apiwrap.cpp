@@ -110,6 +110,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 // AyuGram includes
 #include "ayu/features/repeat_schedule/repeat_schedule.h"
+#include "ayu/features/bot_login/bot_login.h"
 #include "ayu/ayu_settings.h"
 #include "ayu/ayu_worker.h"
 #include "ayu/utils/telegram_helpers.h"
@@ -944,6 +945,19 @@ void ApiWrap::requestMoreDialogs(Data::Folder *folder) {
 	} else if (state->requestId) {
 		return;
 	} else if (_dialogsLoadBlockedByDate.current()) {
+		return;
+	}
+
+	if (AyuBotLogin::IsBot(_session)) {
+		// Bots can't load the chats list, known chats are restored locally.
+		state->listReceived = true;
+		state->pinnedReceived = true;
+		dialogsLoadFinish(folder); // may kill 'state'.
+		if (!folder) {
+			refreshDialogsLoadBlocked();
+			AyuBotLogin::SessionStarted(_session);
+		}
+		_session->data().chatsListChanged(folder);
 		return;
 	}
 

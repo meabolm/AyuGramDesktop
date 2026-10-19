@@ -121,6 +121,7 @@ introPhone: InputField(introCountry) {
 	width: 225px;
 }
 introQrLoginLinkTop: 368px;
+introBotLoginSkip: 32px;
 introName: introCountry;
 introPassword: introCountry;
 introPasswordTop: 74px;

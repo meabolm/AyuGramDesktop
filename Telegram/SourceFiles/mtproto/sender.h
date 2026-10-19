@@ -14,6 +14,21 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace MTP {
 
+// AyuGram: bot accounts can't use messages.getHistory, so the requests
+// are replaced by loading messages by their ids (see bot_login.cpp).
+struct HistoryHook {
+	Fn<bool(not_null<Instance*>)> applies;
+	Fn<mtpRequestId(
+		not_null<Instance*>,
+		const MTPmessages_GetHistory&,
+		DoneHandler&&,
+		FailHandler&&)> send;
+};
+[[nodiscard]] inline HistoryHook &BotHistoryHook() {
+	static auto result = HistoryHook();
+	return result;
+}
+
 class Sender {
 	class RequestBuilder {
 	public:
@@ -301,6 +316,18 @@ public:
 		}
 
 		mtpRequestId send() {
+			if constexpr (std::is_same_v<Request, MTPmessages_GetHistory>) {
+				const auto &hook = BotHistoryHook();
+				if (hook.applies && hook.applies(sender()->_instance)) {
+					const auto id = hook.send(
+						sender()->_instance,
+						_request,
+						takeOnDone(),
+						takeOnFail());
+					registerRequest(id);
+					return id;
+				}
+			}
 			const auto id = sender()->_instance->send(
 				_request,
 				takeOnDone(),

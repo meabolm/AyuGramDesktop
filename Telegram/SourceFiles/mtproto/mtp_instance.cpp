@@ -1976,6 +1976,9 @@ void Instance::ping() {
 }
 
 void Instance::cancel(mtpRequestId requestId) {
+	if (const auto &hook = details::BotCancelHook()) {
+		hook(requestId);
+	}
 	_private->cancel(requestId);
 }
 

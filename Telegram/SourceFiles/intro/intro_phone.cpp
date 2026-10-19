@@ -7,6 +7,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "intro/intro_phone.h"
 
+#include "ayu/features/account_groups/account_groups.h"
+#include "ui/layers/generic_box.h"
+#include "ui/widgets/fields/input_field.h"
+#include "styles/style_layers.h"
+#include <QtCore/QRegularExpression>
+
 #include "lang/lang_keys.h"
 #include "intro/intro_code.h"
 #include "intro/intro_email.h"
@@ -128,6 +134,80 @@ void PhoneWidget::setupQrLogin() {
 	qrLogin->setClickedCallback([=] {
 		goNextOrBack<QrWidget>();
 	});
+
+	// AyuGram: log in as a bot with its token.
+	const auto botLogin = Ui::CreateChild<Ui::LinkButton>(
+		this,
+		AyuAccountGroups::Tr("Log in with a bot token", "ورود با توکن ربات"));
+	botLogin->show();
+	rpl::combine(
+		sizeValue(),
+		botLogin->widthValue()
+	) | rpl::on_next([=](QSize size, int width) {
+		botLogin->moveToLeft(
+			(size.width() - width) / 2,
+			contentTop() + st::introQrLoginLinkTop + st::introBotLoginSkip);
+	}, botLogin->lifetime());
+	botLogin->setClickedCallback([=] {
+		showBotLogin();
+	});
+}
+
+void PhoneWidget::showBotLogin() {
+	using AyuAccountGroups::Tr;
+	const auto weak = QPointer<PhoneWidget>(this);
+	Ui::show(Box([=](not_null<Ui::GenericBox*> box) {
+		box->setTitle(rpl::single(Tr("Log in as a bot", "ورود به عنوان ربات")));
+		const auto field = box->addRow(object_ptr<Ui::InputField>(
+			box,
+			st::defaultInputField,
+			rpl::single(Tr(
+				"Bot token from @BotFather",
+				"توکن ربات از @BotFather"))));
+		const auto about = box->addRow(object_ptr<Ui::FlatLabel>(
+			box,
+			Tr(
+				"The bot works as an account here: you see the chats with "
+				"the bot and can write as the bot. The bot itself keeps "
+				"working. Chats appear when they get new messages.",
+				"ربات اینجا مثل یه اکانت کار می‌کنه: چت‌های ربات رو می‌بینی و "
+				"می‌تونی به جای ربات پیام بدی. خود ربات هم به کارش ادامه میده. "
+				"چت‌ها با اومدن پیام جدید توی لیست میان."),
+			st::boxDividerLabel));
+		box->setFocusCallback([=] { field->setFocusFast(); });
+		const auto sending = std::make_shared<bool>(false);
+		const auto submit = [=] {
+			const auto strong = weak.data();
+			if (!strong || *sending) {
+				return;
+			}
+			auto token = field->getLastText();
+			token.remove(QRegularExpression(u"\\s"_q));
+			if (!token.contains(':')) {
+				field->showError();
+				return;
+			}
+			*sending = true;
+			strong->api().request(MTPauth_ImportBotAuthorization(
+				MTP_int(0),
+				MTP_int(ApiId),
+				MTP_string(ApiHash),
+				MTP_string(token)
+			)).done([=](const MTPauth_Authorization &result) {
+				box->closeBox();
+				if (const auto strong = weak.data()) {
+					strong->finish(result);
+				}
+			}).fail([=](const MTP::Error &error) {
+				*sending = false;
+				field->showError();
+				about->setText(u"❌ "_q + error.type());
+			}).send();
+		};
+		field->submits() | rpl::on_next(submit, field->lifetime());
+		box->addButton(rpl::single(Tr("Log in", "ورود")), submit);
+		box->addButton(tr::lng_cancel(), [=] { box->closeBox(); });
+	}));
 }
 
 void PhoneWidget::resizeEvent(QResizeEvent *e) {

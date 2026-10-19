@@ -47,6 +47,7 @@ protected:
 
 private:
 	void setupQrLogin();
+	void showBotLogin();
 	void phoneChanged();
 	void checkRequest();
 	void countryChanged();

@@ -18,6 +18,12 @@ class Session;
 
 [[nodiscard]] int GetNextRequestId();
 
+// AyuGram: lets bot accounts know about cancelled replaced requests.
+[[nodiscard]] inline Fn<void(mtpRequestId)> &BotCancelHook() {
+	static auto result = Fn<void(mtpRequestId)>();
+	return result;
+}
+
 } // namespace details
 
 class DcOptions;
