@@ -9,6 +9,7 @@
 #include "apiwrap.h"
 #include "ayu/features/account_groups/account_groups.h"
 #include "ayu/features/ai/ai_core.h"
+#include "ayu/features/ayu_tools/ayu_tools.h"
 #include "base/call_delayed.h"
 #include "base/random.h"
 #include "data/data_channel.h"
@@ -27,6 +28,7 @@
 #include <QtCore/QBuffer>
 #include <QtCore/QJsonArray>
 #include <QtCore/QJsonDocument>
+#include <QtCore/QJsonObject>
 #include <QtCore/QRegularExpression>
 #include <QtCore/QUrlQuery>
 #include <QtGui/QPainter>
@@ -485,6 +487,369 @@ void Send(
 			done(ErrorText(error.type()));
 		}
 	}).send();
+}
+
+void React(
+		not_null<Main::Session*> session,
+		const Target &target,
+		const QString &emoji,
+		bool join,
+		Fn<void(QString)> done) {
+	const auto peer = target.peer;
+	if (!peer) {
+		done(target.error);
+		return;
+	}
+	const auto react = [=] {
+		using Flag = MTPmessages_SendReaction::Flag;
+		session->api().request(MTPmessages_SendReaction(
+			MTP_flags(Flag::f_reaction),
+			peer->input(),
+			MTP_int(target.msgId.bare),
+			MTP_vector<MTPReaction>(
+				1,
+				MTP_reactionEmoji(MTP_string(emoji)))
+		)).done([=](const MTPUpdates &result) {
+			session->api().applyUpdates(result);
+			done(QString());
+		}).fail([=](const MTP::Error &error) {
+			const auto type = error.type();
+			done(type == u"REACTION_INVALID"_q
+				? Tr(
+					"This reaction is not allowed in this chat.",
+					"این ری‌اکشن توی این چت مجاز نیست.")
+				: ErrorText(type));
+		}).send();
+	};
+	const auto channel = peer->asChannel();
+	if (!join || !channel || channel->amIn()) {
+		react();
+		return;
+	}
+	session->api().request(MTPchannels_JoinChannel(
+		channel->inputChannel()
+	)).done([=](const MTPmessages_ChatInviteJoinResult &result) {
+		result.match([&](const MTPDmessages_chatInviteJoinResultOk &data) {
+			session->api().applyUpdates(data.vupdates());
+			react();
+		}, [&](const auto &) {
+			done(Tr(
+				"Joining needs a verification, join by hand.",
+				"عضویت نیاز به تایید داره، دستی عضو شو."));
+		});
+	}).fail([=](const MTP::Error &error) {
+		if (error.type() == u"USER_ALREADY_PARTICIPANT"_q) {
+			react();
+		} else {
+			done(ErrorText(error.type()));
+		}
+	}).send();
+}
+
+void RunForAccounts(
+		std::vector<uint64> accounts,
+		Link link,
+		ActionFn action,
+		int minDelay,
+		int maxDelay,
+		Fn<void(int, QString)> progress,
+		Fn<void(int)> finished) {
+	struct State {
+		std::vector<uint64> accounts;
+		Link link;
+		ActionFn action;
+		int minDelay = 0;
+		int maxDelay = 0;
+		Fn<void(int, QString)> progress;
+		Fn<void(int)> finished;
+		int sent = 0;
+		Fn<void(int)> next;
+	};
+	const auto state = std::make_shared<State>(State{
+		.accounts = std::move(accounts),
+		.link = std::move(link),
+		.action = std::move(action),
+		.minDelay = minDelay,
+		.maxDelay = std::max(minDelay, maxDelay),
+		.progress = std::move(progress),
+		.finished = std::move(finished),
+	});
+	state->next = [=](int index) {
+		if (index >= int(state->accounts.size())) {
+			const auto finished = state->finished;
+			const auto sent = state->sent;
+			state->next = nullptr; // Break the cycle.
+			if (finished) {
+				finished(sent);
+			}
+			return;
+		}
+		const auto goOn = [=] {
+			if (index + 1 >= int(state->accounts.size())) {
+				state->next(index + 1);
+				return;
+			}
+			const auto range = state->maxDelay - state->minDelay;
+			const auto seconds = state->minDelay
+				+ (range > 0
+					? int(base::RandomValue<uint32>() % uint32(range + 1))
+					: 0);
+			if (state->progress) {
+				state->progress(
+					index + 1,
+					Tr("Waiting ", "در انتظار ")
+						+ QString::number(seconds)
+						+ Tr(" s…", " ثانیه…"));
+			}
+			base::call_delayed(crl::time(seconds) * 1000, [=] {
+				state->next(index + 1);
+			});
+		};
+		const auto session = AyuTools::FindSession(state->accounts[index]);
+		if (!session) {
+			if (state->progress) {
+				state->progress(index, QString::fromUtf8("❌ ") + Tr(
+					"The account is not logged in.",
+					"اکانت وارد نیست."));
+			}
+			goOn();
+			return;
+		}
+		if (state->progress) {
+			state->progress(index, Tr("Working…", "در حال انجام…"));
+		}
+		const auto strong = not_null<Main::Session*>(session);
+		Resolve(strong, state->link, [=](Target target) {
+			state->action(strong, target, [=](QString error) {
+				if (error.isEmpty()) {
+					++state->sent;
+				}
+				if (state->progress) {
+					state->progress(index, error.isEmpty()
+						? (QString::fromUtf8("✅ ") + Tr("Done", "انجام شد"))
+						: (QString::fromUtf8("❌ ") + error));
+				}
+				goOn();
+			});
+		});
+	};
+	state->next(0);
+}
+
+std::vector<AccountInfo> Accounts() {
+	auto result = std::vector<AccountInfo>();
+	for (const auto &session : AyuTools::Sessions()) {
+		const auto key = AyuAccountGroups::AccountKey(session);
+		const auto groupId = AyuAccountGroups::GroupOf(key);
+		const auto group = AyuAccountGroups::FindGroup(groupId);
+		result.push_back({
+			.id = session->uniqueId(),
+			.name = AyuAccountGroups::DisplayName(session),
+			.group = group ? group->name : QString(),
+			.groupId = groupId,
+		});
+	}
+	return result;
+}
+
+QString AgentPrompt(
+		uint64 currentAccount,
+		const QString &repliedLink,
+		const QString &chatName) {
+	auto accounts = QStringList();
+	auto groups = QStringList();
+	for (const auto &account : Accounts()) {
+		accounts.push_back(u"- "_q
+			+ account.name
+			+ (account.group.isEmpty()
+				? QString()
+				: (u" (category: "_q + account.group + ')'))
+			+ (account.id == currentAccount ? u" [current]"_q : QString()));
+	}
+	for (const auto &group : AyuAccountGroups::Groups()) {
+		groups.push_back(group.name);
+	}
+	return u"\n\nYou are built into AyuGram, the owner's Telegram app, and "
+		"you CAN act with the owner's Telegram accounts through the app. "
+		"Available actions:\n"
+		"- react: put an emoji reaction on a message from some accounts.\n"
+		"- reply: reply to a message from some accounts; the app writes "
+		"a different text for each account with AI and shows them to the "
+		"owner before sending.\n"
+		"When the owner asks for such an action, answer ONLY with JSON, "
+		"no other text, like:\n"
+		"{\"actions\":[{\"type\":\"react\",\"link\":\"https://t.me/...\","
+		"\"emoji\":\"😂\",\"accounts\":{\"category\":\"Work\"},\"count\":5},"
+		"{\"type\":\"reply\",\"link\":\"https://t.me/...\","
+		"\"instructions\":\"what to say and the tone\",\"accounts\":\"all\"}]}\n"
+		"\"accounts\" is \"all\", \"current\", {\"category\":\"<name>\"} or a "
+		"list of account names. \"count\" is optional: use only the first N "
+		"of them. For \"this message\" use the replied message link. If no "
+		"link is known, ask the owner for the message link in plain text. "
+		"Never say that you can't act on Telegram. For everything else "
+		"answer normally.\n"
+		"Accounts:\n"_q
+		+ accounts.join('\n')
+		+ u"\nCategories: "_q
+		+ (groups.isEmpty() ? u"none"_q : groups.join(u", "_q))
+		+ u"\nCurrent chat: "_q
+		+ chatName
+		+ u"\nReplied message link: "_q
+		+ (repliedLink.isEmpty() ? u"none"_q : repliedLink);
+}
+
+std::vector<Action> ParseActions(
+		const QString &answer,
+		uint64 currentAccount,
+		const QString &repliedLink,
+		QString *error) {
+	auto result = std::vector<Action>();
+	const auto from = answer.indexOf('{');
+	const auto till = answer.lastIndexOf('}');
+	if (from < 0 || till <= from || !answer.contains(u"\"actions\""_q)) {
+		return result;
+	}
+	const auto document = QJsonDocument::fromJson(
+		answer.mid(from, till - from + 1).toUtf8());
+	const auto list = document.object().value(u"actions"_q).toArray();
+	const auto all = Accounts();
+	const auto pick = [&](const QJsonValue &value) {
+		auto ids = std::vector<uint64>();
+		const auto add = [&](uint64 id) {
+			if (!ranges::contains(ids, id)) {
+				ids.push_back(id);
+			}
+		};
+		const auto byName = [&](const QString &name) {
+			const auto wanted = name.trimmed();
+			if (wanted.isEmpty()) {
+				return;
+			}
+			for (const auto &account : all) {
+				if (account.name.compare(wanted, Qt::CaseInsensitive) == 0) {
+					add(account.id);
+					return;
+				}
+			}
+			for (const auto &account : all) {
+				if (account.name.contains(wanted, Qt::CaseInsensitive)) {
+					add(account.id);
+				}
+			}
+		};
+		const auto byGroup = [&](const QString &name) {
+			const auto wanted = name.trimmed();
+			for (const auto &account : all) {
+				if (!account.group.isEmpty()
+					&& (account.group.compare(wanted, Qt::CaseInsensitive) == 0
+						|| account.group.contains(wanted, Qt::CaseInsensitive))) {
+					add(account.id);
+				}
+			}
+		};
+		if (value.isString()) {
+			const auto text = value.toString().trimmed().toLower();
+			if (text == u"all"_q) {
+				for (const auto &account : all) {
+					add(account.id);
+				}
+			} else if (text == u"current"_q || text.isEmpty()) {
+				add(currentAccount);
+			} else {
+				byName(value.toString());
+			}
+		} else if (value.isObject()) {
+			const auto object = value.toObject();
+			if (object.contains(u"category"_q)) {
+				byGroup(object.value(u"category"_q).toString());
+			} else if (object.contains(u"name"_q)) {
+				byName(object.value(u"name"_q).toString());
+			}
+		} else if (value.isArray()) {
+			for (const auto &item : value.toArray()) {
+				if (item.isObject() && item.toObject().contains(u"category"_q)) {
+					byGroup(item.toObject().value(u"category"_q).toString());
+				} else {
+					byName(item.toString());
+				}
+			}
+		} else {
+			add(currentAccount);
+		}
+		return ids;
+	};
+	for (const auto &item : list) {
+		const auto object = item.toObject();
+		const auto type = object.value(u"type"_q).toString().toLower();
+		auto action = Action();
+		if (type == u"react"_q || type == u"reaction"_q) {
+			action.type = Action::Type::React;
+			action.emoji = object.value(u"emoji"_q).toString().trimmed();
+			if (action.emoji.isEmpty()) {
+				action.emoji = QString::fromUtf8("👍");
+			}
+		} else if (type == u"reply"_q) {
+			action.type = Action::Type::Reply;
+			action.instructions = object.value(u"instructions"_q).toString();
+		} else {
+			continue;
+		}
+		action.link = object.value(u"link"_q).toString().trimmed();
+		if (action.link.isEmpty()) {
+			action.link = repliedLink;
+		}
+		action.accounts = pick(object.value(u"accounts"_q));
+		const auto count = object.value(u"count"_q).toInt();
+		if (count > 0 && int(action.accounts.size()) > count) {
+			action.accounts.resize(count);
+		}
+		if (!ParseLink(action.link).valid()) {
+			if (error) {
+				*error = Tr(
+					"The message link is missing or wrong. Reply to the "
+					"message or paste its link in the question.",
+					"لینک پیام نیست یا اشتباهه. روی پیام ریپلای بزن یا "
+					"لینکش رو توی سوال بذار.");
+			}
+			continue;
+		} else if (action.accounts.empty()) {
+			if (error) {
+				*error = Tr(
+					"No account matched. Check the category or account names.",
+					"هیچ اکانتی پیدا نشد. اسم دسته‌بندی یا اکانت رو چک کن.");
+			}
+			continue;
+		}
+		result.push_back(std::move(action));
+	}
+	return result;
+}
+
+QString ActionText(const Action &action) {
+	auto names = QStringList();
+	for (const auto &account : Accounts()) {
+		if (ranges::contains(action.accounts, account.id)) {
+			names.push_back(account.name);
+		}
+	}
+	const auto who = QString::number(action.accounts.size())
+		+ Tr(" accounts (", " اکانت (")
+		+ names.join(u", "_q)
+		+ ')';
+	if (action.type == Action::Type::React) {
+		return Tr("Reaction ", "ری‌اکشن ")
+			+ action.emoji
+			+ Tr(" from ", " با ")
+			+ who
+			+ u"\n"_q
+			+ action.link;
+	}
+	return Tr("Reply from ", "ریپلای با ")
+		+ who
+		+ u": "_q
+		+ action.instructions
+		+ u"\n"_q
+		+ action.link;
 }
 
 } // namespace AyuMultiReply

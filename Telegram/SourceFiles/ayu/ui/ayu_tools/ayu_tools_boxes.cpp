@@ -976,6 +976,14 @@ void RepeatingBox(
 // Ask AI.
 //
 
+void MultiReplyBox(
+	not_null<Ui::GenericBox*> box,
+	not_null<Window::SessionController*> controller,
+	QString link,
+	QString presetInstructions,
+	std::vector<uint64> presetAccounts,
+	bool autoGenerate);
+
 struct AskState {
 	std::vector<AyuAi::ChatMessage> history;
 	QString replyFrom;
@@ -1092,6 +1100,12 @@ void AskBox(
 
 	const auto answer = AddLabel(content, QString(), st::ayuToolsAnswer);
 	answer->setBreakEverywhere(false);
+	const auto actionsWrap = content->add(
+		object_ptr<Ui::VerticalLayout>(content),
+		style::margins());
+	const auto repliedLink = item
+		? AyuMultiReply::MakeLink(item)
+		: QString();
 	Ui::AddSkip(content, st::ayuToolsSkip);
 
 	const auto setAnswer = [=](const QString &text) {
@@ -1104,7 +1118,11 @@ void AskBox(
 		system += u"\n\nYou are helping the account owner inside the Telegram chat \""_q
 			+ peer->name()
 			+ u"\". Answer in the language of the question unless asked otherwise. "
-			"If asked to write a message, give only the message text."_q;
+			"If asked to write a message, give only the message text."_q
+			+ AyuMultiReply::AgentPrompt(
+				session->uniqueId(),
+				repliedLink,
+				peer->name());
 		const auto provider = AyuAi::FindProvider(*state->providerId);
 		auto message = AyuAi::ChatMessage{
 			.role = u"user"_q,
@@ -1133,7 +1151,53 @@ void AskBox(
 					.role = u"assistant"_q,
 					.text = text,
 				});
-				setAnswer(text);
+				actionsWrap->clear();
+				auto error = QString();
+				const auto actions = AyuMultiReply::ParseActions(
+					text,
+					session->uniqueId(),
+					repliedLink,
+					&error);
+				if (!actions.empty()) {
+					state->answer = QString();
+					auto lines = QStringList();
+					for (const auto &action : actions) {
+						lines.push_back(QString::fromUtf8("• ")
+							+ AyuMultiReply::ActionText(action));
+					}
+					setAnswer(Tr("I will do this:\n", "این کارها رو انجام میدم:\n")
+						+ lines.join(u"\n\n"_q));
+					AddRowButton(
+						actionsWrap,
+						QString::fromUtf8("✅ ") + Tr("Do it", "انجامش بده"),
+						[=] {
+							box->closeBox();
+							for (const auto &action : actions) {
+								if (action.type
+									== AyuMultiReply::Action::Type::React) {
+									ShowMultiReact(
+										controller,
+										action.link,
+										action.emoji,
+										action.accounts,
+										true);
+								} else {
+									controller->show(Box(
+										MultiReplyBox,
+										controller,
+										action.link,
+										action.instructions,
+										action.accounts,
+										true));
+								}
+							}
+						});
+					actionsWrap->resizeToWidth(st::boxWideWidth);
+				} else if (!error.isEmpty()) {
+					setAnswer(QString::fromUtf8("❌ ") + error);
+				} else {
+					setAnswer(text);
+				}
 				field->setText(QString());
 				field->setPlaceholder(P(Tr(
 					"Ask a follow-up question",
@@ -1746,7 +1810,7 @@ struct MultiAccount {
 };
 
 struct MultiState {
-	std::vector<MultiAccount> accounts;
+	std::shared_ptr<std::vector<MultiAccount>> accounts;
 	std::shared_ptr<uint64> providerId = std::make_shared<uint64>(0);
 	bool busy = false;
 	bool sending = false;
@@ -1769,10 +1833,83 @@ struct MultiState {
 	return { from, till };
 }
 
+[[nodiscard]] std::shared_ptr<std::vector<MultiAccount>> AddAccountPicker(
+		not_null<Ui::VerticalLayout*> content,
+		uint64 current,
+		const std::vector<uint64> &preselected) {
+	const auto accounts = std::make_shared<std::vector<MultiAccount>>();
+	AddTitle(content, Tr("Accounts", "اکانت‌ها"));
+	for (const auto &session : AyuTools::Sessions()) {
+		const auto key = AyuAccountGroups::AccountKey(session);
+		const auto group = AyuAccountGroups::GroupOf(key);
+		auto name = AyuAccountGroups::DisplayName(session);
+		if (const auto found = AyuAccountGroups::FindGroup(group)) {
+			name += u" · "_q + found->name;
+		}
+		const auto id = session->uniqueId();
+		const auto checked = preselected.empty()
+			? (id == current)
+			: ranges::contains(preselected, id);
+		accounts->push_back({
+			.id = id,
+			.name = AyuAccountGroups::DisplayName(session),
+			.group = group,
+			.check = AddCheck(content, name, checked),
+		});
+	}
+	const auto selectWhere = [=](Fn<bool(const MultiAccount&)> test) {
+		for (const auto &account : *accounts) {
+			account.check->setChecked(test(account));
+		}
+	};
+	const auto quick = AddRowButton(
+		content,
+		Tr("Quick select: all / category / none…", "انتخاب سریع: همه / دسته‌بندی / هیچ‌کدوم…"),
+		nullptr);
+	quick->setClickedCallback([=] {
+		const auto menu = MakeMenu(quick);
+		menu->addAction(Tr("All accounts", "همه اکانت‌ها"), [=] {
+			selectWhere([](const MultiAccount &) { return true; });
+		});
+		for (const auto &group : AyuAccountGroups::Groups()) {
+			const auto id = group.id;
+			menu->addAction(Tr("Category: ", "دسته: ") + group.name, [=] {
+				selectWhere([=](const MultiAccount &a) {
+					return a.group == id;
+				});
+			});
+		}
+		menu->addAction(Tr("Only this account", "فقط همین اکانت"), [=] {
+			selectWhere([=](const MultiAccount &a) {
+				return a.id == current;
+			});
+		});
+		menu->addAction(Tr("None", "هیچ‌کدوم"), [=] {
+			selectWhere([](const MultiAccount &) { return false; });
+		});
+		menu->popup(QCursor::pos());
+	});
+	return accounts;
+}
+
+[[nodiscard]] std::vector<uint64> SelectedAccounts(
+		const std::vector<MultiAccount> &accounts) {
+	auto result = std::vector<uint64>();
+	for (const auto &account : accounts) {
+		if (account.check->checked()) {
+			result.push_back(account.id);
+		}
+	}
+	return result;
+}
+
 void MultiReplyBox(
 		not_null<Ui::GenericBox*> box,
 		not_null<Window::SessionController*> controller,
-		QString link) {
+		QString link,
+		QString presetInstructions,
+		std::vector<uint64> presetAccounts,
+		bool autoGenerate) {
 	static auto lastInstructions = QString();
 	static auto lastAccounts = std::vector<uint64>();
 	static auto lastDelay = u"8-25"_q;
@@ -1808,62 +1945,15 @@ void MultiReplyBox(
 		Tr(
 			"What and how to reply? E.g.: agree with him, friendly and short",
 			"چی و با چه لحنی جواب بدن؟ مثلا: باهاش موافقت کنن، دوستانه و کوتاه"),
-		lastInstructions,
+		presetInstructions.isEmpty() ? lastInstructions : presetInstructions,
 		true,
 		st::ayuToolsBigField);
 
-	AddTitle(content, Tr("Accounts", "اکانت‌ها"));
 	const auto current = controller->session().uniqueId();
-	for (const auto &session : AyuTools::Sessions()) {
-		const auto key = AyuAccountGroups::AccountKey(session);
-		const auto group = AyuAccountGroups::GroupOf(key);
-		auto name = AyuAccountGroups::DisplayName(session);
-		if (const auto found = AyuAccountGroups::FindGroup(group)) {
-			name += u" · "_q + found->name;
-		}
-		const auto id = session->uniqueId();
-		const auto checked = lastAccounts.empty()
-			? (id == current)
-			: ranges::contains(lastAccounts, id);
-		state->accounts.push_back({
-			.id = id,
-			.name = AyuAccountGroups::DisplayName(session),
-			.group = group,
-			.check = AddCheck(content, name, checked),
-		});
-	}
-	const auto selectWhere = [=](Fn<bool(const MultiAccount&)> test) {
-		for (const auto &account : state->accounts) {
-			account.check->setChecked(test(account));
-		}
-	};
-	const auto quick = AddRowButton(
+	state->accounts = AddAccountPicker(
 		content,
-		Tr("Quick select: all / category / none…", "انتخاب سریع: همه / دسته‌بندی / هیچ‌کدوم…"),
-		nullptr);
-	quick->setClickedCallback([=] {
-		const auto menu = MakeMenu(quick);
-		menu->addAction(Tr("All accounts", "همه اکانت‌ها"), [=] {
-			selectWhere([](const MultiAccount &) { return true; });
-		});
-		for (const auto &group : AyuAccountGroups::Groups()) {
-			const auto id = group.id;
-			menu->addAction(Tr("Category: ", "دسته: ") + group.name, [=] {
-				selectWhere([=](const MultiAccount &a) {
-					return a.group == id;
-				});
-			});
-		}
-		menu->addAction(Tr("Only this account", "فقط همین اکانت"), [=] {
-			selectWhere([=](const MultiAccount &a) {
-				return a.id == current;
-			});
-		});
-		menu->addAction(Tr("None", "هیچ‌کدوم"), [=] {
-			selectWhere([](const MultiAccount &) { return false; });
-		});
-		menu->popup(QCursor::pos());
-	});
+		current,
+		presetAccounts.empty() ? lastAccounts : presetAccounts);
 
 	AddProviderChooser(content, state->providerId, true);
 	const auto delay = AddField(
@@ -1885,16 +1975,10 @@ void MultiReplyBox(
 		style::margins());
 
 	const auto selected = [=] {
-		auto result = std::vector<uint64>();
-		for (const auto &account : state->accounts) {
-			if (account.check->checked()) {
-				result.push_back(account.id);
-			}
-		}
-		return result;
+		return SelectedAccounts(*state->accounts);
 	};
 	const auto nameOf = [=](uint64 id) {
-		for (const auto &account : state->accounts) {
+		for (const auto &account : *state->accounts) {
 			if (account.id == id) {
 				return account.name;
 			}
@@ -2119,8 +2203,175 @@ void MultiReplyBox(
 	};
 
 	box->addButton(P(Tr("Write replies", "نوشتن ریپلای‌ها")), generate);
+	if (autoGenerate) {
+		crl::on_main(box, generate);
+	}
 	box->addButton(P(Tr("Send", "ارسال")), sendAll);
 	box->addLeftButton(tr::lng_close(), [=] { box->closeBox(); });
+}
+
+void MultiReactBox(
+		not_null<Ui::GenericBox*> box,
+		not_null<Window::SessionController*> controller,
+		QString link,
+		QString emoji,
+		std::vector<uint64> presetAccounts,
+		bool autoStart) {
+	static auto lastAccounts = std::vector<uint64>();
+	static auto lastDelay = u"3-10"_q;
+	static auto lastEmoji = QString::fromUtf8("😂");
+
+	const auto show = std::shared_ptr<Ui::Show>(controller->uiShow());
+	box->setTitle(P(Tr("Reaction with my accounts", "ری‌اکشن با اکانت‌هام")));
+	box->setWidth(st::boxWideWidth);
+	const auto content = box->verticalLayout();
+
+	const auto linkField = AddField(
+		content,
+		Tr("Message link (t.me/…)", "لینک پیام (t.me/…)"),
+		link);
+	const auto emojiField = AddField(
+		content,
+		Tr("Reaction", "ری‌اکشن"),
+		emoji.isEmpty() ? lastEmoji : emoji);
+	const auto choose = AddRowButton(
+		content,
+		Tr("Choose a reaction…", "انتخاب ری‌اکشن…"),
+		nullptr);
+	choose->setClickedCallback([=] {
+		const auto menu = MakeMenu(choose);
+		for (const auto &value : {
+				"😂", "👍", "❤", "🔥", "😁", "👏", "🤣", "😍", "🎉",
+				"🤩", "😢", "😱", "🤯", "🙏", "👌", "💯", "👎", "🤔" }) {
+			const auto text = QString::fromUtf8(value);
+			menu->addAction(text, [=] { emojiField->setText(text); });
+		}
+		menu->popup(QCursor::pos());
+	});
+
+	const auto current = controller->session().uniqueId();
+	const auto accounts = AddAccountPicker(
+		content,
+		current,
+		presetAccounts.empty() ? lastAccounts : presetAccounts);
+	const auto delay = AddField(
+		content,
+		Tr(
+			"Seconds between accounts (e.g. 3-10)",
+			"فاصله بین اکانت‌ها به ثانیه (مثلا 3-10)"),
+		lastDelay);
+	const auto join = AddCheck(
+		content,
+		Tr(
+			"Join the group first if an account is not a member",
+			"اگه اکانتی عضو گروه نبود اول عضو بشه"),
+		false);
+	const auto status = AddLabel(content, QString());
+	const auto results = content->add(
+		object_ptr<Ui::VerticalLayout>(content),
+		style::margins());
+	const auto running = std::make_shared<bool>(false);
+
+	const auto setStatus = [=](const QString &text) {
+		status->setText(text);
+		content->resizeToWidth(st::boxWideWidth);
+	};
+	const auto start = [=] {
+		if (*running) {
+			return;
+		}
+		const auto parsed = AyuMultiReply::ParseLink(linkField->getLastText());
+		if (!parsed.valid()) {
+			linkField->showError();
+			setStatus(Tr(
+				"Paste a message link, for example t.me/group/123 "
+				"(right-click a message > Copy link).",
+				"لینک پیام رو بذار، مثلا t.me/group/123 "
+				"(روی پیام راست‌کلیک > کپی لینک)."));
+			return;
+		}
+		const auto reaction = emojiField->getLastText().trimmed();
+		if (reaction.isEmpty()) {
+			emojiField->showError();
+			return;
+		}
+		const auto chosen = SelectedAccounts(*accounts);
+		if (chosen.empty()) {
+			setStatus(Tr("Choose at least one account.", "حداقل یه اکانت انتخاب کن."));
+			return;
+		}
+		lastAccounts = chosen;
+		lastDelay = delay->getLastText().trimmed();
+		lastEmoji = reaction;
+		*running = true;
+
+		results->clear();
+		auto labels = std::vector<QPointer<Ui::FlatLabel>>();
+		for (const auto id : chosen) {
+			auto name = QString();
+			for (const auto &account : *accounts) {
+				if (account.id == id) {
+					name = account.name;
+				}
+			}
+			labels.push_back(QPointer<Ui::FlatLabel>(AddLabel(
+				results,
+				name + u": "_q + Tr("waiting", "در صف")).get()));
+		}
+		results->resizeToWidth(st::boxWideWidth);
+		content->resizeToWidth(st::boxWideWidth);
+
+		auto names = std::vector<QString>();
+		for (const auto id : chosen) {
+			for (const auto &account : *accounts) {
+				if (account.id == id) {
+					names.push_back(account.name);
+				}
+			}
+		}
+		const auto [minDelay, maxDelay] = ParseDelay(delay->getLastText());
+		const auto joinChecked = join->checked();
+		const auto total = int(chosen.size());
+		setStatus(Tr(
+			"Working one by one. You can close this window, it continues.",
+			"یکی‌یکی انجام میشه. می‌تونی پنجره رو ببندی، ادامه پیدا می‌کنه."));
+		AyuMultiReply::RunForAccounts(
+			chosen,
+			parsed,
+			[=](
+					not_null<Main::Session*> session,
+					const AyuMultiReply::Target &target,
+					Fn<void(QString)> done) {
+				AyuMultiReply::React(
+					session,
+					target,
+					reaction,
+					joinChecked,
+					std::move(done));
+			},
+			minDelay,
+			maxDelay,
+			[=](int index, QString text) {
+				if (index < int(labels.size())) {
+					if (const auto label = labels[index].data()) {
+						label->setText(names[index] + u": "_q + text);
+					}
+				}
+			},
+			[=](int sent) {
+				*running = false;
+				show->showToast(Tr("Reactions: ", "ری‌اکشن‌ها: ")
+					+ QString::number(sent)
+					+ u" / "_q
+					+ QString::number(total));
+			});
+	};
+
+	box->addButton(P(Tr("Start", "شروع")), start);
+	box->addLeftButton(tr::lng_close(), [=] { box->closeBox(); });
+	if (autoStart) {
+		crl::on_main(box, start);
+	}
 }
 
 } // namespace
@@ -2173,7 +2424,28 @@ void ShowChatStats(
 void ShowMultiReply(
 		not_null<Window::SessionController*> controller,
 		QString link) {
-	controller->show(Box(MultiReplyBox, controller, link));
+	controller->show(Box(
+		MultiReplyBox,
+		controller,
+		link,
+		QString(),
+		std::vector<uint64>(),
+		false));
+}
+
+void ShowMultiReact(
+		not_null<Window::SessionController*> controller,
+		QString link,
+		QString emoji,
+		std::vector<uint64> accounts,
+		bool autoStart) {
+	controller->show(Box(
+		MultiReactBox,
+		controller,
+		link,
+		emoji,
+		accounts,
+		autoStart));
 }
 
 void AddMessageToolsActions(
@@ -2198,6 +2470,11 @@ void AddMessageToolsActions(
 				ShowMultiReply(strong, link);
 			}
 		}, &st::menuIconReply);
+		menu->addAction(Tr("Reaction with my accounts", "ری‌اکشن با اکانت‌هام"), [=] {
+			if (const auto strong = weak.get()) {
+				ShowMultiReact(strong, link);
+			}
+		}, &st::menuIconReactions);
 	}
 }
 
@@ -2228,6 +2505,11 @@ void AddChatToolsMenu(
 					ShowMultiReply(strong, QString());
 				}
 			}, &st::menuIconReply);
+			menu->addAction(Tr("Reaction with my accounts", "ری‌اکشن با اکانت‌هام"), [=] {
+				if (const auto strong = weak.get()) {
+					ShowMultiReact(strong, QString());
+				}
+			}, &st::menuIconReactions);
 			menu->addAction(Tr("AI tasks for this chat", "وظیفه‌های هوش مصنوعی این چت"), [=] {
 				if (const auto strong = weak.get()) {
 					ShowChatAiTasks(strong, peer, topicRootId);

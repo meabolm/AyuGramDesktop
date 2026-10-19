@@ -54,6 +54,14 @@ void ShowMultiReply(
 	not_null<Window::SessionController*> controller,
 	QString link = QString());
 
+// Reactions on one message from several of my accounts.
+void ShowMultiReact(
+	not_null<Window::SessionController*> controller,
+	QString link = QString(),
+	QString emoji = QString(),
+	std::vector<uint64> accounts = {},
+	bool autoStart = false);
+
 // Items for the context menu of a message.
 void AddMessageToolsActions(
 	not_null<Ui::PopupMenu*> menu,

@@ -70,6 +70,61 @@ void Send(
 	bool join,
 	Fn<void(QString)> done);
 
+// Puts a reaction, `done` gets an empty string on success.
+void React(
+	not_null<Main::Session*> session,
+	const Target &target,
+	const QString &emoji,
+	bool join,
+	Fn<void(QString)> done);
+
+// Runs an action for several accounts one by one with random pauses.
+// `progress` gets (index, status text), `finished` gets the success count.
+using ActionFn = Fn<void(
+	not_null<Main::Session*> session,
+	const Target &target,
+	Fn<void(QString)> done)>;
+void RunForAccounts(
+	std::vector<uint64> accounts,
+	Link link,
+	ActionFn action,
+	int minDelay,
+	int maxDelay,
+	Fn<void(int, QString)> progress,
+	Fn<void(int)> finished);
+
+struct AccountInfo {
+	uint64 id = 0; // Session unique id.
+	QString name;
+	QString group;
+	int32 groupId = 0;
+};
+[[nodiscard]] std::vector<AccountInfo> Accounts();
+
+// AI "agent": the AI may answer with actions in JSON.
+struct Action {
+	enum class Type {
+		React,
+		Reply,
+	};
+	Type type = Type::React;
+	QString link;
+	QString emoji;
+	QString instructions;
+	std::vector<uint64> accounts;
+};
+[[nodiscard]] QString AgentPrompt(
+	uint64 currentAccount,
+	const QString &repliedLink,
+	const QString &chatName);
+// Empty if the answer has no actions. `error` is set for bad actions.
+[[nodiscard]] std::vector<Action> ParseActions(
+	const QString &answer,
+	uint64 currentAccount,
+	const QString &repliedLink,
+	QString *error);
+[[nodiscard]] QString ActionText(const Action &action);
+
 [[nodiscard]] QByteArray ImageToJpeg(QImage image);
 
 } // namespace AyuMultiReply
