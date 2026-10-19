@@ -379,7 +379,18 @@ void ProviderEditBox(
 					+ ShortLine(answer, 80));
 			}),
 			crl::guard(box, [=](QString error) {
-				status->setText(QString::fromUtf8("❌ ") + error);
+				const auto sent = collect().apiKey;
+				const auto masked = (sent.size() > 10)
+					? (sent.left(5) + QString::fromUtf8("…") + sent.right(4))
+					: sent;
+				status->setText(QString::fromUtf8("❌ ")
+					+ error
+					+ u"\n\n"_q
+					+ Tr("Key that was sent: ", "کلیدی که فرستاده شد: ")
+					+ masked
+					+ Tr(" (length ", " (طول ")
+					+ QString::number(sent.size())
+					+ u")"_q);
 			}));
 	});
 	if (provider.id) {
