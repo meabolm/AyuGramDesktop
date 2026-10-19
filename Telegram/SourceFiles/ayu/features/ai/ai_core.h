@@ -71,6 +71,9 @@ struct Request {
 	int maxTokens = 1500;
 };
 
+// Removes spaces, quotes and invisible characters from a pasted key.
+[[nodiscard]] QString CleanApiKey(QString key);
+
 // Returns a function cancelling the request.
 Fn<void()> Complete(
 	Request request,

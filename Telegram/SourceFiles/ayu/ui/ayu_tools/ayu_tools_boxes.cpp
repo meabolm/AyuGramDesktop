@@ -326,7 +326,7 @@ void ProviderEditBox(
 		auto result = provider;
 		result.name = name->getLastText().trimmed();
 		result.baseUrl = url->getLastText().trimmed();
-		result.apiKey = key->getLastText().trimmed();
+		result.apiKey = AyuAi::CleanApiKey(key->getLastText());
 		result.model = model->getLastText().trimmed();
 		result.vision = vision->checked();
 		if (result.name.isEmpty()) {
@@ -345,6 +345,14 @@ void ProviderEditBox(
 		const auto value = collect();
 		if (value.baseUrl.isEmpty()) {
 			url->showError();
+			return;
+		} else if (value.apiKey.contains('*')) {
+			key->showError();
+			status->setText(Tr(
+				"This key is hidden with *** and can't work. Create a new key "
+				"on the service site and copy it right away.",
+				"این کلید با *** مخفی شده و کار نمی‌کنه. توی سایت سرویس یه "
+				"کلید جدید بساز و همون لحظه کپیش کن."));
 			return;
 		} else if (value.model.isEmpty()) {
 			model->showError();

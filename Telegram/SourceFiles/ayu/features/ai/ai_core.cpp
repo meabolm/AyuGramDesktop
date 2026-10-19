@@ -26,6 +26,8 @@
 #include "main/main_session.h"
 #include "mtproto/mtproto_proxy_data.h"
 
+#include <QtCore/QPointer>
+#include <QtCore/QRegularExpression>
 #include <QtCore/QJsonArray>
 #include <QtCore/QJsonDocument>
 #include <QtNetwork/QNetworkAccessManager>
@@ -290,7 +292,13 @@ public:
 		message = QString::fromUtf8(body.left(300));
 	}
 	if (status == 401 || status == 403) {
-		message = Tr("Wrong or blocked API key. ", "کلید API اشتباه یا مسدود است. ")
+		message = Tr(
+			"The API key is wrong. Copy the full key right when you create "
+			"it on the service site (later it is shown hidden with ***), "
+			"then paste it here again.\n",
+			"کلید API اشتباهه. کلید کامل فقط همون لحظه ساختنش توی سایت "
+			"نشون داده میشه (بعدش با *** مخفی میشه). یه کلید جدید بساز، "
+			"همون لحظه کپیش کن و اینجا بذار.\n")
 			+ message;
 	} else if (status == 402) {
 		message = Tr("Not enough credit. ", "اعتبار حساب کافی نیست. ")
@@ -1095,6 +1103,16 @@ Fn<void()> Complete(
 		std::move(failed));
 }
 
+QString CleanApiKey(QString key) {
+	static const auto invisible = QRegularExpression(
+		u"[\\s\\x{200B}-\\x{200F}\\x{202A}-\\x{202E}\\x{2066}-\\x{2069}\\x{FEFF}\"'`]"_q);
+	key.remove(invisible);
+	if (key.startsWith(u"Bearer"_q, Qt::CaseInsensitive)) {
+		key = key.mid(6);
+	}
+	return key;
+}
+
 Fn<void()> CompleteWith(
 		Provider providerValue,
 		Request request,
@@ -1156,7 +1174,7 @@ Fn<void()> CompleteWith(
 		QNetworkRequest::ContentTypeHeader,
 		u"application/json"_q);
 	networkRequest.setTransferTimeout(kRequestTimeout);
-	const auto key = provider->apiKey.trimmed();
+	const auto key = CleanApiKey(provider->apiKey);
 	if (!key.isEmpty()) {
 		networkRequest.setRawHeader(
 			"Authorization",
@@ -1197,10 +1215,13 @@ Fn<void()> CompleteWith(
 		}
 		done(content);
 	});
+	const auto weak = QPointer<QNetworkReply>(reply);
 	return [=] {
 		*cancelled = true;
-		if (reply->isRunning()) {
-			reply->abort();
+		if (const auto strong = weak.data()) {
+			if (strong->isRunning()) {
+				strong->abort();
+			}
 		}
 	};
 }
