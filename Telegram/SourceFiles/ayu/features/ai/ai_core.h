@@ -109,6 +109,7 @@ struct Task {
 	int minReactions = 5; // CopyReaction.
 	int timeOfDay = 9 * 60; // Post: minutes since midnight.
 	bool daily = true; // Post: every day, otherwise once.
+	int intervalMinutes = 0; // Post: repeat every N minutes if set.
 	TimeId runAt = 0; // Post, once: the time to run.
 	bool toSavedMessages = false; // Post: send to my Saved Messages.
 	TimeId lastRun = 0;

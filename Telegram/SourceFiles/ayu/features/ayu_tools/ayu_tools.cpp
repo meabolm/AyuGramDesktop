@@ -8,6 +8,7 @@
 
 #include "apiwrap.h"
 #include "base/unixtime.h"
+#include "ayu/features/ai/ai_conversation.h"
 #include "ayu/features/ai/ai_core.h"
 #include "ayu/features/repeat_schedule/repeat_schedule.h"
 #include "core/application.h"
@@ -29,6 +30,7 @@ namespace AyuTools {
 void Init() {
 	AyuRepeat::Init();
 	AyuAi::Init();
+	AyuConversation::Init();
 }
 
 Main::Session *FindSession(uint64 accountKey) {

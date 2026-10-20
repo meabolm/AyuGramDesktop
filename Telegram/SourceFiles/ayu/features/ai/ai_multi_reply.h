@@ -8,6 +8,8 @@
 // Replies to one message from several of my accounts, written by AI.
 #pragma once
 
+#include "ayu/features/ai/ai_conversation.h"
+
 namespace Main {
 class Session;
 } // namespace Main
@@ -106,12 +108,20 @@ struct Action {
 	enum class Type {
 		React,
 		Reply,
+		Conversation,
 	};
 	Type type = Type::React;
 	QString link;
 	QString emoji;
 	QString instructions;
 	std::vector<uint64> accounts;
+
+	// Conversation.
+	QString topic;
+	std::vector<AyuConversation::Participant> participants;
+	int minGap = 60;
+	int maxGap = 180;
+	int maxMessages = 30;
 };
 [[nodiscard]] QString AgentPrompt(
 	uint64 currentAccount,

@@ -133,6 +133,7 @@ void Save() {
 		object.insert(u"minReactions"_q, task.minReactions);
 		object.insert(u"timeOfDay"_q, task.timeOfDay);
 		object.insert(u"daily"_q, task.daily);
+		object.insert(u"interval"_q, task.intervalMinutes);
 		object.insert(u"runAt"_q, task.runAt);
 		object.insert(u"toSavedMessages"_q, task.toSavedMessages);
 		object.insert(u"lastRun"_q, task.lastRun);
@@ -189,6 +190,7 @@ State &Loaded() {
 			.minReactions = o.value(u"minReactions"_q).toInt(5),
 			.timeOfDay = o.value(u"timeOfDay"_q).toInt(9 * 60),
 			.daily = o.value(u"daily"_q).toBool(true),
+			.intervalMinutes = o.value(u"interval"_q).toInt(),
 			.runAt = TimeId(o.value(u"runAt"_q).toInt()),
 			.toSavedMessages = o.value(u"toSavedMessages"_q).toBool(),
 			.lastRun = TimeId(o.value(u"lastRun"_q).toInt()),
@@ -709,7 +711,7 @@ void RunPost(
 			}
 			Acted(taskId);
 			if (const auto current = TaskPtr(taskId)) {
-				if (!current->daily) {
+				if (!current->daily && current->intervalMinutes <= 0) {
 					current->enabled = false;
 				}
 				Notify();
@@ -749,7 +751,9 @@ void RunPost(
 }
 
 [[nodiscard]] bool PostDue(const Task &task, TimeId now) {
-	if (task.daily) {
+	if (task.intervalMinutes > 0) {
+		return (now - task.lastRun) >= task.intervalMinutes * 60;
+	} else if (task.daily) {
 		const auto at = TodayAt(task.timeOfDay);
 		return (now >= at) && (task.lastRun < at) && (now - at) < 3 * 3600;
 	}
@@ -1382,10 +1386,17 @@ QString TaskSummary(const Task &task) {
 		: task.title.trimmed();
 	if (task.kind == TaskKind::Post) {
 		const auto time = QTime(task.timeOfDay / 60, task.timeOfDay % 60);
-		result += u" • "_q + (task.daily
-			? Tr("every day at ", "هر روز ساعت ")
-			: Tr("once at ", "یک بار ساعت "))
-			+ QLocale().toString(time, QLocale::ShortFormat);
+		if (task.intervalMinutes > 0) {
+			result += u" • "_q
+				+ Tr("every ", "هر ")
+				+ QString::number(task.intervalMinutes)
+				+ Tr(" min", " دقیقه");
+		} else {
+			result += u" • "_q + (task.daily
+				? Tr("every day at ", "هر روز ساعت ")
+				: Tr("once at ", "یک بار ساعت "))
+				+ QLocale().toString(time, QLocale::ShortFormat);
+		}
 	}
 	if (!task.enabled) {
 		result += u" • "_q + Tr("off", "خاموش");

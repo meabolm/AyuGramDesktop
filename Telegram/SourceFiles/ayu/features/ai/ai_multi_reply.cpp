@@ -652,6 +652,34 @@ std::vector<AccountInfo> Accounts() {
 	return result;
 }
 
+[[nodiscard]] QString ServicesList() {
+	auto result = QStringList();
+	for (const auto &provider : AyuAi::Providers()) {
+		result.push_back(provider.name + u" ("_q + provider.model + ')');
+	}
+	return result.isEmpty() ? u"none"_q : result.join(u", "_q);
+}
+
+[[nodiscard]] uint64 ProviderByName(const QString &name) {
+	const auto wanted = name.trimmed();
+	if (wanted.isEmpty()) {
+		return 0;
+	}
+	for (const auto &provider : AyuAi::Providers()) {
+		if (provider.name.compare(wanted, Qt::CaseInsensitive) == 0) {
+			return provider.id;
+		}
+	}
+	for (const auto &provider : AyuAi::Providers()) {
+		if (provider.name.contains(wanted, Qt::CaseInsensitive)
+			|| wanted.contains(provider.name, Qt::CaseInsensitive)
+			|| provider.model.contains(wanted, Qt::CaseInsensitive)) {
+			return provider.id;
+		}
+	}
+	return 0;
+}
+
 QString AgentPrompt(
 		uint64 currentAccount,
 		const QString &repliedLink,
@@ -676,12 +704,19 @@ QString AgentPrompt(
 		"- reply: reply to a message from some accounts; the app writes "
 		"a different text for each account with AI and shows them to the "
 		"owner before sending.\n"
+		"- conversation: some accounts talk with each other in the current "
+		"chat, each with its own role or side and its own AI service, a "
+		"message every few minutes until the message limit.\n"
 		"When the owner asks for such an action, answer ONLY with JSON, "
 		"no other text, like:\n"
 		"{\"actions\":[{\"type\":\"react\",\"link\":\"https://t.me/...\","
 		"\"emoji\":\"😂\",\"accounts\":{\"category\":\"Work\"},\"count\":5},"
 		"{\"type\":\"reply\",\"link\":\"https://t.me/...\","
-		"\"instructions\":\"what to say and the tone\",\"accounts\":\"all\"}]}\n"
+		"\"instructions\":\"what to say and the tone\",\"accounts\":\"all\"},"
+		"{\"type\":\"conversation\",\"topic\":\"topic and rules\","
+		"\"participants\":[{\"account\":\"<account name>\","
+		"\"side\":\"role, opinion, tone\",\"service\":\"<AI service name>\"}],"
+		"\"gap_minutes\":[1,3],\"messages\":30}]}\n"
 		"\"accounts\" is \"all\", \"current\", {\"category\":\"<name>\"} or a "
 		"list of account names. \"count\" is optional: use only the first N "
 		"of them. For \"this message\" use the replied message link. If no "
@@ -690,6 +725,8 @@ QString AgentPrompt(
 		"answer normally.\n"
 		"Accounts:\n"_q
 		+ accounts.join('\n')
+		+ u"\nAI services: "_q
+		+ ServicesList()
 		+ u"\nCategories: "_q
 		+ (groups.isEmpty() ? u"none"_q : groups.join(u", "_q))
 		+ u"\nCurrent chat: "_q
@@ -791,6 +828,41 @@ std::vector<Action> ParseActions(
 		} else if (type == u"reply"_q) {
 			action.type = Action::Type::Reply;
 			action.instructions = object.value(u"instructions"_q).toString();
+		} else if (type == u"conversation"_q) {
+			action.type = Action::Type::Conversation;
+			action.topic = object.value(u"topic"_q).toString();
+			for (const auto &value : object.value(u"participants"_q).toArray()) {
+				const auto p = value.toObject();
+				const auto ids = pick(p.value(u"account"_q));
+				if (ids.empty()) {
+					continue;
+				}
+				action.participants.push_back({
+					.account = ids.front(),
+					.providerId = ProviderByName(
+						p.value(u"service"_q).toString()),
+					.persona = p.value(u"side"_q).toString(),
+				});
+			}
+			const auto gap = object.value(u"gap_minutes"_q);
+			if (gap.isArray()) {
+				action.minGap = int(gap.toArray().at(0).toDouble(1) * 60);
+				action.maxGap = int(gap.toArray().at(1).toDouble(
+					gap.toArray().at(0).toDouble(3)) * 60);
+			} else if (gap.isDouble()) {
+				action.minGap = action.maxGap = int(gap.toDouble() * 60);
+			}
+			action.maxMessages = object.value(u"messages"_q).toInt(30);
+			if (action.participants.empty()) {
+				if (error) {
+					*error = Tr(
+						"No account matched. Check the account names.",
+						"هیچ اکانتی پیدا نشد. اسم اکانت‌ها رو چک کن.");
+				}
+				continue;
+			}
+			result.push_back(std::move(action));
+			continue;
 		} else {
 			continue;
 		}
@@ -836,6 +908,36 @@ QString ActionText(const Action &action) {
 		+ Tr(" accounts (", " اکانت (")
 		+ names.join(u", "_q)
 		+ ')';
+	if (action.type == Action::Type::Conversation) {
+		auto lines = QStringList();
+		for (const auto &p : action.participants) {
+			auto name = QString();
+			for (const auto &account : Accounts()) {
+				if (account.id == p.account) {
+					name = account.name;
+				}
+			}
+			const auto provider = AyuAi::FindProvider(p.providerId);
+			lines.push_back(u"  - "_q
+				+ name
+				+ u" ("_q
+				+ (provider ? provider->name : Tr("default AI", "هوش پیش‌فرض"))
+				+ u"): "_q
+				+ p.persona);
+		}
+		return Tr("Conversation in this chat: ", "گفتگو توی همین چت: ")
+			+ action.topic
+			+ u"\n"_q
+			+ lines.join('\n')
+			+ u"\n"_q
+			+ Tr("A message every ", "هر ")
+			+ QString::number(action.minGap / 60)
+			+ u"-"_q
+			+ QString::number(action.maxGap / 60)
+			+ Tr(" min, up to ", " دقیقه یه پیام، تا ")
+			+ QString::number(action.maxMessages)
+			+ Tr(" messages", " پیام");
+	}
 	if (action.type == Action::Type::React) {
 		return Tr("Reaction ", "ری‌اکشن ")
 			+ action.emoji

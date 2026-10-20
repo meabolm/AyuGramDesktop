@@ -216,6 +216,14 @@ void BuildOtherThings(SectionBuilder &builder) {
 		},
 	});
 	builder.addButton({
+		.id = u"ayu/aiConversations"_q,
+		.title = rpl::single(AyuAccountGroups::Tr("AI conversations", "گفتگوهای هوش مصنوعی")),
+		.icon = { &st::menuIconDiscussion },
+		.onClick = [=] {
+			AyuToolsUi::ShowConversations(controller);
+		},
+	});
+	builder.addButton({
 		.id = u"ayu/repeatingMessages"_q,
 		.title = rpl::single(AyuAccountGroups::Tr("Repeating messages", "پیام‌های تکراری")),
 		.icon = { &st::menuIconRestore },

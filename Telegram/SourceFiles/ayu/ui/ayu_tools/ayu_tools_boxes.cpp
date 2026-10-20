@@ -7,6 +7,7 @@
 #include "ayu/ui/ayu_tools/ayu_tools_boxes.h"
 
 #include "ayu/features/account_groups/account_groups.h"
+#include "ayu/features/ai/ai_conversation.h"
 #include "ayu/features/ai/ai_core.h"
 #include "ayu/features/ai/ai_multi_reply.h"
 #include "base/call_delayed.h"
@@ -487,6 +488,7 @@ struct TaskOptions {
 	Ui::InputField *time = nullptr;
 	Ui::Checkbox *daily = nullptr;
 	Ui::Checkbox *saved = nullptr;
+	Ui::InputField *interval = nullptr;
 };
 
 [[nodiscard]] QString TimeText(int minutes) {
@@ -593,6 +595,7 @@ void TaskEditBox(
 		t.maxPerHour = FieldInt(f.perHour, t.maxPerHour, 1, 60);
 		t.minReplies = FieldInt(f.minReplies, t.minReplies, 1, 1000);
 		t.minReactions = FieldInt(f.minReactions, t.minReactions, 1, 1000);
+		t.intervalMinutes = FieldInt(f.interval, t.intervalMinutes, 0, 10080);
 		if (f.time) {
 			if (const auto parsed = ParseTime(f.time->getLastText())) {
 				t.timeOfDay = *parsed;
@@ -655,6 +658,12 @@ void TaskEditBox(
 			addPerHour();
 			break;
 		case TaskKind::Post: {
+			fields->interval = AddField(
+				options,
+				Tr(
+					"Repeat every N minutes (0 = use the time below)",
+					"هر چند دقیقه یه بار (۰ = طبق ساعت پایین)"),
+				QString::number(t.intervalMinutes));
 			fields->daily = AddCheck(
 				options,
 				Tr("Repeat every day", "هر روز تکرار بشه"),
@@ -756,7 +765,10 @@ void TaskEditBox(
 			instructions->showError();
 			return 0;
 		}
-		if (t.kind == TaskKind::Post && !t.daily && !t.runAt) {
+		if (t.kind == TaskKind::Post
+			&& !t.daily
+			&& !t.runAt
+			&& t.intervalMinutes <= 0) {
 			show->showToast(Tr("Choose the time.", "زمان رو انتخاب کن."));
 			return 0;
 		}
@@ -976,6 +988,315 @@ void RepeatingBox(
 // Ask AI.
 //
 
+//
+// AI conversations.
+//
+
+[[nodiscard]] QString AccountName(uint64 id) {
+	for (const auto &account : AyuMultiReply::Accounts()) {
+		if (account.id == id) {
+			return account.name;
+		}
+	}
+	return Tr("(not logged in)", "(وارد نیست)");
+}
+
+void ConversationEditBox(
+		not_null<Ui::GenericBox*> box,
+		std::shared_ptr<Ui::Show> show,
+		AyuConversation::Conversation conversation,
+		QString chatName) {
+	using AyuConversation::Participant;
+	const auto state = std::make_shared<AyuConversation::Conversation>(
+		conversation);
+	box->setTitle(P(conversation.id
+		? Tr("Edit AI conversation", "ویرایش گفتگوی هوش مصنوعی")
+		: Tr("New AI conversation", "گفتگوی هوش مصنوعی جدید")));
+	box->setWidth(st::boxWideWidth);
+	const auto content = box->verticalLayout();
+
+	AddLabel(content, Tr("Chat: ", "چت: ") + chatName);
+	const auto title = AddField(
+		content,
+		Tr("Title (optional)", "عنوان (اختیاری)"),
+		state->title);
+	const auto topic = AddField(
+		content,
+		Tr(
+			"Topic and rules, e.g.: discuss which phone is better, keep it friendly",
+			"موضوع و قوانین، مثلا: بحث کنن کدوم گوشی بهتره، دوستانه بمونه"),
+		state->topic,
+		true,
+		st::ayuToolsBigField);
+
+	AddTitle(content, Tr("Participants", "شرکت‌کننده‌ها"));
+	AddLabel(
+		content,
+		Tr(
+			"Each participant is one of your accounts with its own AI service "
+			"and its own role or side. The accounts must be members of the chat.",
+			"هر شرکت‌کننده یکی از اکانت‌هاته با سرویس هوش مصنوعی و نقش یا "
+			"طرف بحث خودش. اکانت‌ها باید عضو چت باشن."));
+	const auto list = content->add(
+		object_ptr<Ui::VerticalLayout>(content),
+		style::margins());
+	const auto personas = std::make_shared<std::vector<Ui::InputField*>>();
+	const auto collect = [=] {
+		for (auto i = 0; i != int(personas->size()); ++i) {
+			if (i < int(state->participants.size())) {
+				state->participants[i].persona
+					= (*personas)[i]->getLastText().trimmed();
+			}
+		}
+	};
+	const auto rebuild = std::make_shared<Fn<void()>>();
+	*rebuild = [=] {
+		list->clear();
+		personas->clear();
+		for (auto i = 0; i != int(state->participants.size()); ++i) {
+			const auto &p = state->participants[i];
+			AddTitle(list, Tr("Participant ", "شرکت‌کننده ")
+				+ QString::number(i + 1));
+			const auto account = AddRowButton(
+				list,
+				Tr("Account: ", "اکانت: ") + AccountName(p.account),
+				nullptr);
+			account->setClickedCallback([=] {
+				const auto menu = MakeMenu(account);
+				for (const auto &a : AyuMultiReply::Accounts()) {
+					const auto id = a.id;
+					menu->addAction(
+						a.name + (a.group.isEmpty()
+							? QString()
+							: (u" · "_q + a.group)),
+						[=] {
+							collect();
+							state->participants[i].account = id;
+							crl::on_main(box, [=] { (*rebuild)(); });
+						});
+				}
+				menu->popup(QCursor::pos());
+			});
+			const auto provider = std::make_shared<uint64>(p.providerId);
+			const auto service = AddRowButton(
+				list,
+				Tr("AI service: ", "سرویس هوش مصنوعی: ")
+					+ ProviderName(p.providerId),
+				nullptr);
+			service->setClickedCallback([=] {
+				const auto menu = MakeMenu(service);
+				const auto choose = [=](uint64 id) {
+					collect();
+					state->participants[i].providerId = id;
+					crl::on_main(box, [=] { (*rebuild)(); });
+				};
+				menu->addAction(Tr("Default", "پیش‌فرض"), [=] { choose(0); });
+				for (const auto &item : AyuAi::Providers()) {
+					const auto id = item.id;
+					menu->addAction(ProviderTitle(item), [=] { choose(id); });
+				}
+				menu->popup(QCursor::pos());
+			});
+			personas->push_back(AddField(
+				list,
+				Tr(
+					"Role, opinion, side and tone, e.g.: loves iPhone, sarcastic",
+					"نقش، نظر، طرف بحث و لحن، مثلا: طرفدار آیفون، کنایه‌ای"),
+				p.persona,
+				true));
+			AddRowButton(list, Tr("Remove this participant", "حذف این شرکت‌کننده"), [=] {
+				collect();
+				if (i < int(state->participants.size())) {
+					state->participants.erase(state->participants.begin() + i);
+				}
+				crl::on_main(box, [=] { (*rebuild)(); });
+			});
+		}
+		AddRowButton(list, QString::fromUtf8("➕ ") + Tr("Add participant", "افزودن شرکت‌کننده"), [=] {
+			collect();
+			const auto accounts = AyuMultiReply::Accounts();
+			auto next = Participant();
+			for (const auto &a : accounts) {
+				if (!ranges::contains(
+						state->participants,
+						a.id,
+						&Participant::account)) {
+					next.account = a.id;
+					break;
+				}
+			}
+			if (!next.account && !accounts.empty()) {
+				next.account = accounts.front().id;
+			}
+			state->participants.push_back(next);
+			crl::on_main(box, [=] { (*rebuild)(); });
+		});
+		list->resizeToWidth(st::boxWideWidth);
+		content->resizeToWidth(st::boxWideWidth);
+	};
+	(*rebuild)();
+
+	AddTitle(content, Tr("Timing", "زمان‌بندی"));
+	const auto gap = AddField(
+		content,
+		Tr(
+			"Minutes between messages (e.g. 1-3 or 15)",
+			"فاصله بین پیام‌ها به دقیقه (مثلا 1-3 یا 15)"),
+		(state->minGap == state->maxGap)
+			? QString::number(state->minGap / 60.)
+			: (QString::number(state->minGap / 60.)
+				+ '-'
+				+ QString::number(state->maxGap / 60.)));
+	const auto limit = AddField(
+		content,
+		Tr(
+			"Stop after this many messages (0 = never)",
+			"بعد از چند پیام تموم بشه (۰ = هیچ‌وقت)"),
+		QString::number(state->maxMessages));
+	const auto showService = AddCheck(
+		content,
+		Tr(
+			"Write the AI service name before each message (to compare them)",
+			"اسم سرویس هوش مصنوعی اول هر پیام نوشته بشه (برای مقایسه)"),
+		state->showService);
+	const auto enabled = AddCheck(
+		content,
+		Tr("Enabled", "فعال باشه"),
+		state->enabled);
+	if (conversation.id) {
+		const auto status = AyuConversation::Status(conversation.id);
+		if (!status.isEmpty()) {
+			AddLabel(content, Tr("Status: ", "وضعیت: ") + status);
+		}
+	}
+	AddLabel(
+		content,
+		Tr(
+			"Works while AyuGram is open on this computer.",
+			"فقط وقتی ایوگرام روی این کامپیوتر بازه کار می‌کنه."));
+	Ui::AddSkip(content, st::ayuToolsSkip);
+
+	const auto save = [=]() -> uint64 {
+		collect();
+		auto &c = *state;
+		c.title = title->getLastText().trimmed();
+		c.topic = topic->getLastText().trimmed();
+		const auto parts = gap->getLastText().split('-', Qt::SkipEmptyParts);
+		auto ok1 = false, ok2 = false;
+		const auto from = parts.value(0).trimmed().toDouble(&ok1);
+		const auto till = parts.value(1, parts.value(0)).trimmed().toDouble(&ok2);
+		if (ok1 && ok2 && from > 0) {
+			c.minGap = int(from * 60);
+			c.maxGap = std::max(c.minGap, int(till * 60));
+		}
+		c.maxMessages = FieldInt(limit, c.maxMessages, 0, 100000);
+		c.showService = showService->checked();
+		c.enabled = enabled->checked();
+		if (c.participants.empty()) {
+			show->showToast(Tr(
+				"Add at least one participant.",
+				"حداقل یه شرکت‌کننده اضافه کن."));
+			return 0;
+		} else if (AyuAi::Providers().empty()) {
+			show->showToast(Tr(
+				"Add an AI service first (Settings > AyuGram > Other).",
+				"اول یه سرویس هوش مصنوعی اضافه کن (تنظیمات > ایوگرام > سایر)."));
+			return 0;
+		}
+		c.id = AyuConversation::Save(c);
+		return c.id;
+	};
+	box->addButton(tr::lng_settings_save(), [=] {
+		if (save()) {
+			box->closeBox();
+		}
+	});
+	box->addButton(P(Tr("Start now", "همین الان شروع کن")), [=] {
+		if (const auto id = save()) {
+			AyuConversation::Restart(id);
+			show->showToast(Tr("The conversation started.", "گفتگو شروع شد."));
+			box->closeBox();
+		}
+	});
+	if (conversation.id) {
+		const auto id = conversation.id;
+		box->addLeftButton(P(Tr("Delete", "حذف")), [=] {
+			AyuConversation::Remove(id);
+			box->closeBox();
+		});
+	}
+}
+
+void ConversationsBox(
+		not_null<Ui::GenericBox*> box,
+		std::shared_ptr<Ui::Show> show,
+		PeerData *peer) {
+	box->setTitle(P(Tr("AI conversations", "گفتگوهای هوش مصنوعی")));
+	box->setWidth(st::boxWideWidth);
+	const auto list = box->addRow(
+		object_ptr<Ui::VerticalLayout>(box),
+		style::margins());
+	const auto chatName = [=](PeerId id) {
+		if (peer && peer->id == id) {
+			return peer->name();
+		}
+		for (const auto &session : AyuTools::Sessions()) {
+			if (const auto loaded = session->data().peerLoaded(id)) {
+				return loaded->name();
+			}
+		}
+		return QString("?");
+	};
+	const auto rebuild = [=] {
+		list->clear();
+		AddLabel(
+			list,
+			Tr(
+				"Your accounts talk with each other in a chat, each with its "
+				"own AI service and role. Good for comparing AI services.",
+				"اکانت‌هات توی یه چت با هم حرف می‌زنن، هر کدوم با سرویس هوش "
+				"مصنوعی و نقش خودش. برای مقایسه هوش‌های مصنوعی خوبه."));
+		auto any = false;
+		for (const auto &c : AyuConversation::List()) {
+			if (peer && c.peer != peer->id) {
+				continue;
+			}
+			any = true;
+			const auto status = AyuConversation::Status(c.id);
+			AddRowButton(
+				list,
+				QString::fromUtf8(c.enabled ? "🟢 " : "⚪ ")
+					+ (peer ? QString() : (chatName(c.peer) + u": "_q))
+					+ AyuConversation::Summary(c),
+				[=] {
+					show->showBox(Box(
+						ConversationEditBox,
+						show,
+						c,
+						chatName(c.peer)));
+				});
+			if (!status.isEmpty()) {
+				AddLabel(list, status);
+			}
+		}
+		if (!any) {
+			AddLabel(list, Tr("No conversations yet.", "هنوز گفتگویی نداری."));
+		}
+		Ui::AddSkip(list, st::ayuToolsSkip);
+		list->resizeToWidth(st::boxWideWidth);
+	};
+	rebuild();
+	AyuConversation::Changes() | rpl::on_next(rebuild, box->lifetime());
+	if (peer) {
+		box->addButton(P(Tr("New conversation", "گفتگوی جدید")), [=] {
+			auto c = AyuConversation::Conversation();
+			c.peer = peer->id;
+			show->showBox(Box(ConversationEditBox, show, c, peer->name()));
+		});
+	}
+	box->addButton(tr::lng_close(), [=] { box->closeBox(); });
+}
+
 void MultiReplyBox(
 	not_null<Ui::GenericBox*> box,
 	not_null<Window::SessionController*> controller,
@@ -1174,6 +1495,26 @@ void AskBox(
 							box->closeBox();
 							for (const auto &action : actions) {
 								if (action.type
+									== AyuMultiReply::Action::Type::Conversation) {
+									auto c = AyuConversation::Conversation();
+									c.peer = peer->id;
+									c.title = Tr("By AI request", "با دستور هوش مصنوعی");
+									c.topic = action.topic;
+									c.participants = action.participants;
+									c.minGap = action.minGap;
+									c.maxGap = action.maxGap;
+									c.maxMessages = action.maxMessages;
+									auto providers = base::flat_set<uint64>();
+									for (const auto &p : c.participants) {
+										providers.emplace(p.providerId);
+									}
+									c.showService = (providers.size() > 1);
+									AyuConversation::Restart(
+										AyuConversation::Save(c));
+									show->showToast(Tr(
+										"The conversation started. See ⋮ > My tools > AI conversations.",
+										"گفتگو شروع شد. از ⋮ > ابزارهای من > گفتگوهای هوش مصنوعی می‌بینیش."));
+								} else if (action.type
 									== AyuMultiReply::Action::Type::React) {
 									ShowMultiReact(
 										controller,
@@ -2415,6 +2756,13 @@ void ShowAiAsk(
 		extraContext));
 }
 
+void ShowConversations(
+		not_null<Window::SessionController*> controller,
+		PeerData *peer) {
+	const auto show = std::shared_ptr<Ui::Show>(controller->uiShow());
+	show->showBox(Box(ConversationsBox, show, peer));
+}
+
 void ShowChatStats(
 		not_null<Window::SessionController*> controller,
 		not_null<PeerData*> peer) {
@@ -2510,6 +2858,11 @@ void AddChatToolsMenu(
 					ShowMultiReact(strong, QString());
 				}
 			}, &st::menuIconReactions);
+			menu->addAction(Tr("AI conversations in this chat", "گفتگوهای هوش مصنوعی این چت"), [=] {
+				if (const auto strong = weak.get()) {
+					ShowConversations(strong, peer);
+				}
+			}, &st::menuIconDiscussion);
 			menu->addAction(Tr("AI tasks for this chat", "وظیفه‌های هوش مصنوعی این چت"), [=] {
 				if (const auto strong = weak.get()) {
 					ShowChatAiTasks(strong, peer, topicRootId);

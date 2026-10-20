@@ -49,6 +49,11 @@ void ShowChatStats(
 	not_null<Window::SessionController*> controller,
 	not_null<PeerData*> peer);
 
+// AI conversations between my accounts (all of them if `peer` is null).
+void ShowConversations(
+	not_null<Window::SessionController*> controller,
+	PeerData *peer = nullptr);
+
 // Replies to one message from several of my accounts.
 void ShowMultiReply(
 	not_null<Window::SessionController*> controller,
