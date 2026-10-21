@@ -31,6 +31,7 @@ struct Job {
 	TimeId first = 0;
 	TimeId created = 0;
 	TimeId planned = 0; // The date of the last scheduled copy.
+	bool paused = false;
 	bool silent = false;
 };
 
@@ -49,6 +50,12 @@ bool Intercept(
 
 // Stops the job; with `deleteScheduled` also deletes its scheduled copies.
 void Stop(uint64 jobId, bool deleteScheduled);
+
+// Pausing deletes the scheduled copies, resuming schedules them again.
+void SetPaused(uint64 jobId, bool paused);
+
+// Changes the text and the period, the old copies are replaced.
+void Update(uint64 jobId, TextWithTags text, TimeId period);
 
 // Fills the scheduled copies of all jobs of the session now.
 void TopUp(not_null<Main::Session*> session);

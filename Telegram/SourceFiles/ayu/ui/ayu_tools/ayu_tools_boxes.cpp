@@ -906,6 +906,74 @@ void AllTasksBox(
 // Repeating messages.
 //
 
+[[nodiscard]] std::optional<AyuRepeat::Job> FindRepeatJob(uint64 id) {
+	for (const auto &job : AyuRepeat::Jobs()) {
+		if (job.id == id) {
+			return job;
+		}
+	}
+	return std::nullopt;
+}
+
+void RepeatEditBox(
+		not_null<Ui::GenericBox*> box,
+		std::shared_ptr<Ui::Show> show,
+		AyuRepeat::Job job) {
+	box->setTitle(P(Tr("Edit repeating message", "ویرایش پیام تکراری")));
+	box->setWidth(st::boxWideWidth);
+	const auto content = box->verticalLayout();
+	const auto field = content->add(
+		object_ptr<Ui::InputField>(
+			content,
+			st::ayuToolsBigField,
+			Ui::InputField::Mode::MultiLine,
+			P(Tr("Message text", "متن پیام")),
+			job.text),
+		st::boxRowPadding + QMargins(0, st::ayuToolsSkip, 0, 0));
+	const auto period = std::make_shared<TimeId>(job.period);
+	const auto periodText = std::make_shared<rpl::variable<QString>>(
+		Tr("Repeat: ", "تکرار: ") + AyuRepeat::PeriodText(job.period));
+	const auto choose = AddRowButton(content, periodText, nullptr);
+	choose->setClickedCallback([=] {
+		const auto menu = MakeMenu(choose);
+		const auto minute = TimeId(60);
+		const auto hour = 60 * minute;
+		const auto day = 24 * hour;
+		for (const auto value : {
+				5 * minute, 10 * minute, 15 * minute, 30 * minute,
+				hour, 2 * hour, 3 * hour, 4 * hour, 6 * hour, 8 * hour,
+				12 * hour, day, 7 * day, 14 * day, 30 * day }) {
+			menu->addAction(AyuRepeat::PeriodText(value), [=] {
+				*period = value;
+				*periodText = Tr("Repeat: ", "تکرار: ")
+					+ AyuRepeat::PeriodText(value);
+			});
+		}
+		menu->popup(QCursor::pos());
+	});
+	AddLabel(
+		content,
+		Tr(
+			"The already scheduled copies are replaced with the new ones.",
+			"نسخه‌هایی که از قبل زمان‌بندی شدن با نسخه جدید عوض میشن."));
+	Ui::AddSkip(content, st::ayuToolsSkip);
+	box->setFocusCallback([=] { field->setFocusFast(); });
+	const auto id = job.id;
+	box->addButton(tr::lng_settings_save(), [=] {
+		auto text = field->getTextWithTags();
+		if (text.text.trimmed().isEmpty()) {
+			field->showError();
+			return;
+		}
+		AyuRepeat::Update(id, std::move(text), *period);
+		show->showToast(Tr(
+			"Saved, the scheduled copies are being replaced…",
+			"ذخیره شد، نسخه‌های زمان‌بندی‌شده دارن عوض میشن…"));
+		box->closeBox();
+	});
+	box->addButton(tr::lng_cancel(), [=] { box->closeBox(); });
+}
+
 void RepeatingBox(
 		not_null<Ui::GenericBox*> box,
 		std::shared_ptr<Ui::Show> show) {
@@ -936,7 +1004,8 @@ void RepeatingBox(
 			const auto chat = session
 				? AyuTools::PeerName(session, job.peer)
 				: QString("?");
-			const auto text = chat
+			const auto text = QString::fromUtf8(job.paused ? "⏸ " : "🔁 ")
+				+ chat
 				+ u" · "_q
 				+ AyuRepeat::PeriodText(job.period)
 				+ u" · "_q
@@ -946,12 +1015,27 @@ void RepeatingBox(
 			const auto id = job.id;
 			const auto jobText = job.text.text;
 			const auto button = AddRowButton(list, text, nullptr);
+			const auto paused = job.paused;
 			button->setClickedCallback([=] {
 				const auto menu = MakeMenu(button);
 				menu->addAction(
+					Tr("Edit text or period", "ویرایش متن یا فاصله تکرار"),
+					[=] {
+						if (const auto found = FindRepeatJob(id)) {
+							show->showBox(Box(RepeatEditBox, show, *found));
+						}
+					},
+					&st::menuIconEdit);
+				menu->addAction(
+					paused
+						? Tr("Turn on again", "دوباره روشن کن")
+						: Tr("Turn off for now", "فعلا خاموش کن"),
+					[=] { AyuRepeat::SetPaused(id, !paused); },
+					paused ? &st::menuIconRestore : &st::menuIconMute);
+				menu->addAction(
 					Tr(
-						"Stop and delete scheduled copies",
-						"متوقف کن و نسخه‌های زمان‌بندی‌شده رو پاک کن"),
+						"Delete completely (with scheduled copies)",
+						"کامل حذف کن (با نسخه‌های زمان‌بندی‌شده)"),
 					[=] { AyuRepeat::Stop(id, true); },
 					&st::menuIconDelete);
 				menu->addAction(

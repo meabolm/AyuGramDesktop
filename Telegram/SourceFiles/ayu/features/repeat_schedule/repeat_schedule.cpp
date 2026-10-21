@@ -66,6 +66,7 @@ void Save() {
 		object.insert(u"first"_q, job.first);
 		object.insert(u"created"_q, job.created);
 		object.insert(u"planned"_q, job.planned);
+		object.insert(u"paused"_q, job.paused);
 		object.insert(u"silent"_q, job.silent);
 		list.append(object);
 	}
@@ -98,6 +99,7 @@ State &Loaded() {
 			.first = TimeId(object.value(u"first"_q).toInt()),
 			.created = TimeId(object.value(u"created"_q).toInt()),
 			.planned = TimeId(object.value(u"planned"_q).toInt()),
+			.paused = object.value(u"paused"_q).toBool(),
 			.silent = object.value(u"silent"_q).toBool(),
 		};
 		if (job.id && job.account && job.peer && job.period > 0) {
@@ -157,6 +159,9 @@ void SendCopies(
 
 void TopUpJob(not_null<Main::Session*> session, const Job &job) {
 	auto &state = Loaded();
+	if (job.paused) {
+		return;
+	}
 	if (state.busy.contains(job.id)) {
 		return;
 	}
@@ -178,6 +183,10 @@ void TopUpJob(not_null<Main::Session*> session, const Job &job) {
 			return;
 		}
 		const auto job = *i;
+		if (job.paused) {
+			release();
+			return;
+		}
 		const auto now = base::unixtime::now();
 		auto copies = 0;
 		auto last = TimeId();
@@ -288,22 +297,15 @@ rpl::producer<> Changes() {
 	return Instance().changes.events();
 }
 
-void Stop(uint64 jobId, bool deleteScheduled) {
-	auto &state = Loaded();
-	const auto i = ranges::find(state.jobs, jobId, &Job::id);
-	if (i == end(state.jobs)) {
-		return;
-	}
-	const auto job = *i;
-	Remove(jobId);
-	if (!deleteScheduled) {
-		return;
-	}
+void DeleteCopies(const Job &job, Fn<void()> done) {
 	const auto session = AyuTools::FindSession(job.account);
 	const auto peer = session
 		? session->data().peerLoaded(job.peer)
 		: nullptr;
 	if (!peer) {
+		if (done) {
+			done();
+		}
 		return;
 	}
 	AyuTools::LoadScheduled(session, peer, [=](
@@ -315,6 +317,9 @@ void Stop(uint64 jobId, bool deleteScheduled) {
 			}
 		}
 		if (ids.isEmpty()) {
+			if (done) {
+				done();
+			}
 			return;
 		}
 		session->api().request(MTPmessages_DeleteScheduledMessages(
@@ -322,7 +327,76 @@ void Stop(uint64 jobId, bool deleteScheduled) {
 			MTP_vector<MTPint>(ids)
 		)).done([=](const MTPUpdates &result) {
 			session->api().applyUpdates(result);
+			if (done) {
+				done();
+			}
+		}).fail([=] {
+			if (done) {
+				done();
+			}
 		}).send();
+	}, [=](const QString &) {
+		if (done) {
+			done();
+		}
+	});
+}
+
+void Stop(uint64 jobId, bool deleteScheduled) {
+	auto &state = Loaded();
+	const auto i = ranges::find(state.jobs, jobId, &Job::id);
+	if (i == end(state.jobs)) {
+		return;
+	}
+	const auto job = *i;
+	Remove(jobId);
+	if (deleteScheduled) {
+		DeleteCopies(job, nullptr);
+	}
+}
+
+void SetPaused(uint64 jobId, bool paused) {
+	auto &state = Loaded();
+	const auto i = ranges::find(state.jobs, jobId, &Job::id);
+	if (i == end(state.jobs) || i->paused == paused) {
+		return;
+	}
+	i->paused = paused;
+	i->planned = 0;
+	i->created = base::unixtime::now();
+	Save();
+	state.changes.fire({});
+	const auto job = *i;
+	if (paused) {
+		DeleteCopies(job, nullptr);
+	} else if (const auto session = AyuTools::FindSession(job.account)) {
+		TopUpJob(session, job);
+	}
+}
+
+void Update(uint64 jobId, TextWithTags text, TimeId period) {
+	auto &state = Loaded();
+	const auto i = ranges::find(state.jobs, jobId, &Job::id);
+	if (i == end(state.jobs) || text.text.trimmed().isEmpty() || period <= 0) {
+		return;
+	}
+	const auto old = *i;
+	DeleteCopies(old, [=] {
+		auto &state = Loaded();
+		const auto i = ranges::find(state.jobs, jobId, &Job::id);
+		if (i == end(state.jobs)) {
+			return;
+		}
+		i->text = text;
+		i->period = period;
+		i->planned = 0;
+		i->created = base::unixtime::now();
+		Save();
+		state.changes.fire({});
+		const auto job = *i;
+		if (const auto session = AyuTools::FindSession(job.account)) {
+			TopUpJob(session, job);
+		}
 	});
 }
 
