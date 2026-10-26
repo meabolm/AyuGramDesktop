@@ -39,6 +39,7 @@ struct Conversation {
 uint64 Save(Conversation conversation); // Returns the id.
 void Remove(uint64 id);
 void Restart(uint64 id); // Enables, resets the counter, starts now.
+void StopAll();
 [[nodiscard]] rpl::producer<> Changes();
 [[nodiscard]] QString Status(uint64 id);
 [[nodiscard]] QString Summary(const Conversation &conversation);

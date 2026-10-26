@@ -1371,6 +1371,12 @@ void ConversationsBox(
 	};
 	rebuild();
 	AyuConversation::Changes() | rpl::on_next(rebuild, box->lifetime());
+	box->addLeftButton(P(Tr("Stop all", "توقف همه")), [=] {
+		AyuConversation::StopAll();
+		show->showToast(Tr(
+			"All AI conversations are stopped.",
+			"همه گفتگوهای هوش مصنوعی متوقف شدن."));
+	});
 	if (peer) {
 		box->addButton(P(Tr("New conversation", "گفتگوی جدید")), [=] {
 			auto c = AyuConversation::Conversation();
@@ -2947,6 +2953,14 @@ void AddChatToolsMenu(
 					ShowConversations(strong, peer);
 				}
 			}, &st::menuIconDiscussion);
+			menu->addAction(Tr("Stop all AI conversations", "توقف همه گفتگوهای هوش مصنوعی"), [=] {
+				AyuConversation::StopAll();
+				if (const auto strong = weak.get()) {
+					strong->showToast(Tr(
+						"All AI conversations are stopped.",
+						"همه گفتگوهای هوش مصنوعی متوقف شدن."));
+				}
+			}, &st::menuIconCancel);
 			menu->addAction(Tr("AI tasks for this chat", "وظیفه‌های هوش مصنوعی این چت"), [=] {
 				if (const auto strong = weak.get()) {
 					ShowChatAiTasks(strong, peer, topicRootId);

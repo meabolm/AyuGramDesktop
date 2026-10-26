@@ -193,34 +193,79 @@ void Step(Conversation conversation) {
 		Instance().busy.remove(id);
 	};
 	const auto name = session->user()->name();
-	AyuTools::LoadRecent(session, peer, kContext, [=](
-			std::vector<AyuTools::RawMessage> list) {
+	// Who takes part: only their messages are read and answered.
+	struct Member {
+		PeerId peer = 0;
+		QString name;
+		QString persona;
+	};
+	auto members = std::vector<Member>();
+	for (const auto &p : conversation.participants) {
+		if (const auto s = AyuTools::FindSession(p.account)) {
+			members.push_back({
+				.peer = s->userPeerId(),
+				.name = s->user()->name(),
+				.persona = p.persona.trimmed(),
+			});
+		}
+	}
+	const auto me = session->userPeerId();
+	AyuTools::LoadRecent(session, peer, 60, [=](
+			std::vector<AyuTools::RawMessage> all) {
+		auto list = std::vector<AyuTools::RawMessage>();
+		for (const auto &message : all) {
+			if (!message.service
+				&& ranges::contains(members, message.from, &Member::peer)) {
+				list.push_back(message);
+			}
+		}
+		if (int(list.size()) > kContext) {
+			list.erase(list.begin(), list.end() - kContext);
+		}
+		auto others = QStringList();
+		for (const auto &member : members) {
+			if (member.peer != me) {
+				others.push_back(u"- "_q
+					+ member.name
+					+ (member.persona.isEmpty()
+						? QString()
+						: (u": "_q + member.persona)));
+			}
+		}
 		auto system = AyuAi::BaseSystemPrompt();
-		system += u"\n\nYou take part in a Telegram group chat as the "
-			"member \""_q + name + u"\".\n"_q
+		system += u"\n\nYou take part in a planned discussion in a Telegram "
+			"group as the member \""_q + name + u"\".\n"_q
 			+ u"Your role, opinion and side: "_q
 			+ (participant.persona.trimmed().isEmpty()
 				? u"be yourself, a friendly member."_q
 				: participant.persona.trimmed())
-			+ u"\nThe conversation topic and rules: "_q
+			+ u"\nThe topic and rules of the discussion: "_q
 			+ (conversation.topic.trimmed().isEmpty()
 				? u"a natural friendly chat."_q
 				: conversation.topic.trimmed())
-			+ u"\nWrite ONE short natural chat message as this member, "
-			"reacting to what the others said: agree, disagree, argue, "
-			"joke or ask, as your role says. Don't repeat earlier "
-			"messages. Use the language of the chat. Write only the "
-			"message text, without your name."_q;
+			+ u"\nThe other members of this discussion:\n"_q
+			+ (others.isEmpty() ? u"(nobody yet)"_q : others.join('\n'))
+			+ u"\nTalk ONLY with these members and ONLY about the topic. "
+			"Other people in the group are not part of it: never answer "
+			"them and never comment on their messages. Write ONE short "
+			"natural chat message that continues the discussion: answer the "
+			"last point of the other members, agree or disagree as your role "
+			"says, bring a new argument, don't repeat earlier messages. If "
+			"nobody said anything yet, start the topic. Use the language of "
+			"the topic. Write only the message text, without your name."_q;
 		const auto context = AyuTools::FormatForPrompt(session, list, 8000);
-		const auto text = u"Recent messages (old to new, your own messages "
-			"are signed \""_q + name + u"\"):\n"_q
-			+ (context.trimmed().isEmpty() ? u"(empty)"_q : context)
+		const auto text = u"The discussion so far (old to new, your own "
+			"messages are signed \""_q + name + u"\"):\n"_q
+			+ (context.trimmed().isEmpty() ? u"(nothing yet)"_q : context)
 			+ u"\n\nWrite your next message."_q;
 		auto replyTo = MsgId();
-		if (!list.empty()
-			&& !list.back().out
-			&& (base::RandomValue<uint32>() % 2)) {
-			replyTo = list.back().id;
+		for (auto i = list.rbegin(); i != list.rend(); ++i) {
+			if (i->from != me) {
+				if (base::RandomValue<uint32>() % 3) {
+					replyTo = i->id;
+				}
+				break;
+			}
 		}
 		AyuAi::Complete(
 			AyuAi::Request{
@@ -336,6 +381,20 @@ void Remove(uint64 id) {
 	Notify();
 }
 
+void StopAll() {
+	auto changed = false;
+	for (auto &c : Loaded()) {
+		if (c.enabled) {
+			c.enabled = false;
+			changed = true;
+			Instance().status[c.id] = Tr("Stopped.", "متوقف شد.");
+		}
+	}
+	if (changed) {
+		Notify();
+	}
+}
+
 void Restart(uint64 id) {
 	if (const auto c = FindPtr(id)) {
 		c->enabled = true;
@@ -378,6 +437,20 @@ void Init() {
 	auto &state = Instance();
 	if (state.timer) {
 		return;
+	}
+	// Conversations never continue by themselves after a restart.
+	auto changed = false;
+	for (auto &c : Loaded()) {
+		if (c.enabled) {
+			c.enabled = false;
+			changed = true;
+			state.status[c.id] = Tr(
+				"Stopped because AyuGram was closed. Press \"Start now\" to continue.",
+				"چون ایوگرام بسته شد متوقف شد. برای ادامه «همین الان شروع کن» رو بزن.");
+		}
+	}
+	if (changed) {
+		Write();
 	}
 	state.timer = std::make_unique<base::Timer>([] { Tick(); });
 	state.timer->callEach(kTick);
