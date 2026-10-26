@@ -152,6 +152,10 @@ void Remember(not_null<HistoryItem*> item) {
 	}
 	const auto session = &item->history()->session();
 	const auto peer = item->history()->peer;
+	if (!item->history()->folderKnown()) {
+		// Bots can't ask the server for the folder of a chat.
+		item->history()->clearFolder();
+	}
 	auto &saved = SavedFor(session);
 	auto &entry = saved.peers[peer->id];
 	if (const auto user = peer->asUser()) {
@@ -594,6 +598,10 @@ void ApplyMessages(
 			}
 			const auto peerId = PeerFromMessage(message);
 			const auto history = session->data().history(peerId);
+			if (!history->folderKnown()) {
+				// Bots can't ask the server for the folder of a chat.
+				history->clearFolder();
+			}
 			const auto id = IdFromMessage(message);
 			const auto last = history->lastMessage();
 			if (!last || last->id < id) {
